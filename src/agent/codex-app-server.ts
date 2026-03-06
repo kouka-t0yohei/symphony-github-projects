@@ -124,6 +124,7 @@ export class CodexAppServerClient {
     let completed = false;
     let activeIssue = false;
     let errorMessage: string | undefined;
+    let initialized = false;
 
     child.stdout?.on('data', (chunk: Buffer | string) => {
       latestEventAt = Date.now();
@@ -135,6 +136,17 @@ export class CodexAppServerClient {
         if (line !== '') {
           this.handleEventLine(line, (event) => {
             this.applyEvent(event);
+
+            const initializedFlag = readBoolean(event, [
+              'params.initialized',
+              'initialized',
+              'params.ready',
+              'ready',
+            ]);
+            if (initializedFlag === true || this.isInitializedEvent(event)) {
+              initialized = true;
+            }
+
             const completedFlag = readBoolean(event, [
               'params.turn.completed',
               'params.completed',
@@ -184,13 +196,44 @@ export class CodexAppServerClient {
       throw new Error('codex app-server stdin is not available');
     }
 
-    const threadStartMessage = JSON.stringify({
-      method: 'thread.start',
-      params: {
-        prompt: params.renderedPrompt,
-      },
+    child.stdin.write(`${JSON.stringify({ method: 'initialize', params: {} })}\n`);
+
+    const initOutcome = await waitForUntil({
+      isDone: () => initialized,
+      hasError: () => errorMessage,
+      latestEventAt: () => latestEventAt,
+      turnTimeoutMs: this.turnTimeoutMs,
+      readTimeoutMs: this.readTimeoutMs,
+      stallTimeoutMs: this.stallTimeoutMs,
     });
-    child.stdin.write(`${threadStartMessage}\n`);
+
+    if (initOutcome === 'stalled') {
+      child.kill('SIGTERM');
+      return { status: 'stalled', activeIssue: false, state: this.snapshotState() };
+    }
+    if (initOutcome === 'timeout') {
+      child.kill('SIGTERM');
+      return { status: 'timeout', activeIssue: false, state: this.snapshotState() };
+    }
+    if (errorMessage) {
+      const status = /rate\s*limit/i.test(errorMessage) ? 'rate_limited' : 'error';
+      child.kill('SIGTERM');
+      return {
+        status,
+        activeIssue: false,
+        state: this.snapshotState(),
+        errorMessage,
+      };
+    }
+
+    const threadStartParams: Record<string, string> = {
+      prompt: params.renderedPrompt,
+    };
+    if (this.state.threadId) {
+      threadStartParams.thread_id = this.state.threadId;
+    }
+
+    child.stdin.write(`${JSON.stringify({ method: 'thread.start', params: threadStartParams })}\n`);
 
     for (let turn = 1; turn <= this.maxTurns; turn += 1) {
       const message =
@@ -198,18 +241,23 @@ export class CodexAppServerClient {
           ? params.renderedPrompt
           : (params.continuationGuidance ?? 'Continue from the active issue and finish the task.');
 
+      const turnParams: Record<string, string | number> = {
+        message,
+        turn,
+      };
+      if (this.state.threadId) {
+        turnParams.thread_id = this.state.threadId;
+      }
+
       const turnStartMessage = JSON.stringify({
         method: 'turn.start',
-        params: {
-          message,
-          turn,
-        },
+        params: turnParams,
       });
       this.state.turnsStarted += 1;
       child.stdin.write(`${turnStartMessage}\n`);
 
-      const turnOutcome = await waitForTurnOutcome({
-        isCompleted: () => completed,
+      const turnOutcome = await waitForUntil({
+        isDone: () => completed,
         hasError: () => errorMessage,
         latestEventAt: () => latestEventAt,
         turnTimeoutMs: this.turnTimeoutMs,
@@ -257,6 +305,11 @@ export class CodexAppServerClient {
     };
   }
 
+  private isInitializedEvent(event: JsonRpcEvent): boolean {
+    const method = readString(event, ['method', 'event', 'type']);
+    return method === 'initialized' || method === 'initialize.done';
+  }
+
   private handleEventLine(line: string, onEvent: (event: JsonRpcEvent) => void): void {
     try {
       const parsed = JSON.parse(line) as JsonRpcEvent;
@@ -272,6 +325,10 @@ export class CodexAppServerClient {
     this.state.threadId =
       readString(event, ['params.thread_id', 'thread_id']) ?? this.state.threadId;
     this.state.turnId = readString(event, ['params.turn_id', 'turn_id']) ?? this.state.turnId;
+
+    if (!this.state.sessionId && this.state.threadId) {
+      this.state.sessionId = `thread:${this.state.threadId}`;
+    }
 
     const inputTokens = readNumber(event, [
       'params.usage.input_tokens',
@@ -321,8 +378,8 @@ export class CodexAppServerClient {
   }
 }
 
-async function waitForTurnOutcome(params: {
-  isCompleted: () => boolean;
+async function waitForUntil(params: {
+  isDone: () => boolean;
   hasError: () => string | undefined;
   latestEventAt: () => number;
   turnTimeoutMs: number;
@@ -334,7 +391,7 @@ async function waitForTurnOutcome(params: {
     if (params.hasError()) {
       return 'error';
     }
-    if (params.isCompleted()) {
+    if (params.isDone()) {
       return 'completed';
     }
 
