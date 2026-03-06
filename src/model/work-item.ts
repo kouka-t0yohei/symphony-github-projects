@@ -42,9 +42,5 @@ export function normalizeState(value: string): WorkItemState {
 }
 
 export function sanitizeWorkspaceKey(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  return value.trim().replace(/[^A-Za-z0-9._-]/g, '_');
 }
