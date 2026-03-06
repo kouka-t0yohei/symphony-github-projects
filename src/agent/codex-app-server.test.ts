@@ -34,7 +34,7 @@ class FakeChildProcess extends EventEmitter {
   }
 }
 
-test('spawns codex app-server with workspace cwd and sends thread/turn start', async () => {
+test('spawns codex app-server with deterministic initialize -> thread/turn order', async () => {
   const fake = new FakeChildProcess();
   const spawnCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
 
@@ -45,6 +45,7 @@ test('spawns codex app-server with workspace cwd and sends thread/turn start', a
     spawn: (command, args, options) => {
       spawnCalls.push({ command, args, cwd: options.cwd });
       queueMicrotask(() => {
+        fake.emitStdoutJson({ method: 'initialized' });
         fake.emitStdoutJson({
           params: {
             session_id: 's1',
@@ -75,14 +76,16 @@ test('spawns codex app-server with workspace cwd and sends thread/turn start', a
   assert.equal(result.state.turnId, 'turn-1');
   assert.equal(result.state.usage.totalTokens, 13);
 
-  const payload = fake.writes.join('');
-  assert.match(payload, /"method":"thread.start"/);
-  assert.match(payload, /"method":"turn.start"/);
-  assert.match(payload, /"message":"hello codex"/);
+  const writes = fake.writes.map((w) => JSON.parse(w.trim()));
+  assert.equal(writes[0].method, 'initialize');
+  assert.equal(writes[1].method, 'thread.start');
+  assert.equal(writes[2].method, 'turn.start');
+  assert.equal(writes[2].params.message, 'hello codex');
 });
 
-test('continues multi-turn when active issue is returned', async () => {
+test('continues multi-turn on same thread and uses continuation guidance', async () => {
   const fake = new FakeChildProcess();
+  let initializedSent = false;
   let firstTurnEventSent = false;
   let secondTurnEventSent = false;
 
@@ -94,13 +97,18 @@ test('continues multi-turn when active issue is returned', async () => {
     spawn: () => {
       const timer = setInterval(() => {
         const payload = fake.writes.join('');
+        if (!initializedSent && payload.includes('"method":"initialize"')) {
+          initializedSent = true;
+          fake.emitStdoutJson({ method: 'initialized' });
+          fake.emitStdoutJson({ params: { thread_id: 'shared-thread' } });
+        }
         if (!firstTurnEventSent && payload.includes('"turn":1')) {
           firstTurnEventSent = true;
           fake.emitStdoutJson({ params: { turn: { completed: true, active_issue: true } } });
         }
         if (!secondTurnEventSent && payload.includes('"turn":2')) {
           secondTurnEventSent = true;
-          fake.emitStdoutJson({ params: { turn: { completed: true, active_issue: false } } });
+          fake.emitStdoutJson({ params: { turn_id: 'turn-2', turn: { completed: true, active_issue: false } } });
           clearInterval(timer);
         }
       }, 1);
@@ -118,11 +126,45 @@ test('continues multi-turn when active issue is returned', async () => {
   assert.ok(result.state.turnsStarted >= 2);
   assert.ok(result.state.turnsCompleted >= 2);
 
-  const payload = fake.writes.join('');
-  assert.match(payload, /"message":"first prompt"/);
-  assert.match(payload, /"message":"continue please"/);
+  const writes = fake.writes.map((w) => JSON.parse(w.trim()));
+  const turnMessages = writes.filter((w) => w.method === 'turn.start').map((w) => w.params.message);
+  assert.deepEqual(turnMessages.slice(0, 2), ['first prompt', 'continue please']);
+
+  const threadStart = writes.find((w) => w.method === 'thread.start');
+  assert.equal(threadStart?.params.prompt, 'first prompt');
+
+  const secondTurn = writes.find((w) => w.method === 'turn.start' && w.params.turn === 2);
+  assert.equal(secondTurn?.params.thread_id, 'shared-thread');
+  assert.equal(initializedSent, true);
   assert.equal(firstTurnEventSent, true);
   assert.equal(secondTurnEventSent, true);
+});
+
+test('derives session id from thread id when session_id is absent', async () => {
+  const fake = new FakeChildProcess();
+  const client = new CodexAppServerClient({
+    cwd: '/tmp/workspace',
+    readTimeoutMs: 10,
+    stallTimeoutMs: 500,
+    spawn: () => {
+      queueMicrotask(() => {
+        fake.emitStdoutJson({ method: 'initialized' });
+        fake.emitStdoutJson({
+          params: {
+            thread_id: 't-derived',
+            turn_id: 'turn-1',
+            turn: { completed: true, active_issue: false },
+          },
+        });
+      });
+      return fake;
+    },
+  });
+
+  const result = await client.run({ renderedPrompt: 'hello' });
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.sessionId, 'thread:t-derived');
+  assert.equal(result.state.threadId, 't-derived');
 });
 
 test('detects stall and terminates the subprocess', async () => {
