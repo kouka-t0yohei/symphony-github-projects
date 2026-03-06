@@ -1,12 +1,14 @@
+import { loadWorkflowFile, type WorkflowDocument } from './loader.js';
+
 export type WorkflowValidationErrorCode =
-  | "tracker.kind.required"
-  | "tracker.kind.unsupported"
-  | "tracker.github.owner.required"
-  | "tracker.github.projectNumber.invalid"
-  | "tracker.auth.tokenEnv.required"
-  | "polling.intervalMs.invalid"
-  | "workspace.baseDir.required"
-  | "agent.command.required";
+  | 'tracker.kind.required'
+  | 'tracker.kind.unsupported'
+  | 'tracker.github.owner.required'
+  | 'tracker.github.projectNumber.invalid'
+  | 'tracker.auth.tokenEnv.required'
+  | 'polling.intervalMs.invalid'
+  | 'workspace.baseDir.required'
+  | 'agent.command.required';
 
 export interface WorkflowValidationError {
   code: WorkflowValidationErrorCode;
@@ -16,12 +18,12 @@ export interface WorkflowValidationError {
 
 export interface WorkflowContract {
   tracker: {
-    kind: "github_projects";
+    kind: 'github_projects';
     github: {
       owner: string;
       projectNumber: number;
       tokenEnv: string;
-      type?: "org" | "user";
+      type?: 'org' | 'user';
     };
   };
   polling: {
@@ -42,25 +44,106 @@ export interface WorkflowContract {
   };
 }
 
+export interface LoadedWorkflowContract extends WorkflowContract {
+  prompt_template: string;
+}
+
 export interface WorkflowLoader {
-  load(path: string): Promise<WorkflowContract>;
+  load(path: string): Promise<LoadedWorkflowContract>;
+}
+
+export class WorkflowContractBuildError extends Error {
+  constructor(
+    message: string,
+    public readonly validationErrors: WorkflowValidationError[],
+  ) {
+    super(message);
+    this.name = 'WorkflowContractBuildError';
+  }
+}
+
+export class FileWorkflowLoader implements WorkflowLoader {
+  async load(path: string): Promise<LoadedWorkflowContract> {
+    const doc = await loadWorkflowFile(path);
+    return buildContract(doc);
+  }
 }
 
 export class NotImplementedWorkflowLoader implements WorkflowLoader {
-  async load(_path: string): Promise<WorkflowContract> {
-    throw new Error("WORKFLOW.md loader not implemented yet");
+  async load(_path: string): Promise<LoadedWorkflowContract> {
+    throw new Error('WORKFLOW.md loader not implemented yet');
   }
+}
+
+export function buildContract(doc: WorkflowDocument): LoadedWorkflowContract {
+  const errors = validateWorkflowContract(doc.config);
+  if (errors.length > 0) {
+    const details = errors.map((error) => `${error.path}: ${error.message}`).join('; ');
+    throw new WorkflowContractBuildError(`Invalid WORKFLOW.md front matter: ${details}`, errors);
+  }
+
+  const config = doc.config as Record<string, unknown>;
+  const tracker = config.tracker as Record<string, unknown>;
+  const github = tracker.github as Record<string, unknown>;
+  const auth = (tracker.auth ?? {}) as Record<string, unknown>;
+  const polling = config.polling as Record<string, unknown>;
+  const workspace = config.workspace as Record<string, unknown>;
+  const agent = config.agent as Record<string, unknown>;
+  const hooks = (config.hooks ?? {}) as Record<string, unknown>;
+
+  const tokenEnv =
+    typeof auth.tokenEnv === 'string' && auth.tokenEnv.trim() !== ''
+      ? auth.tokenEnv
+      : (github.tokenEnv as string);
+
+  return {
+    tracker: {
+      kind: 'github_projects',
+      github: {
+        owner: github.owner as string,
+        projectNumber: github.projectNumber as number,
+        tokenEnv,
+        type: github.type as 'org' | 'user' | undefined,
+      },
+    },
+    polling: {
+      intervalMs: polling.intervalMs as number,
+      maxConcurrency:
+        typeof polling.maxConcurrency === 'number' && Number.isFinite(polling.maxConcurrency)
+          ? polling.maxConcurrency
+          : undefined,
+    },
+    workspace: {
+      baseDir: workspace.baseDir as string,
+    },
+    agent: {
+      command: agent.command as string,
+      args:
+        Array.isArray(agent.args) && agent.args.every((v) => typeof v === 'string')
+          ? (agent.args as string[])
+          : undefined,
+    },
+    hooks:
+      typeof hooks === 'object'
+        ? {
+            onStart: typeof hooks.onStart === 'string' ? hooks.onStart : undefined,
+            onSuccess: typeof hooks.onSuccess === 'string' ? hooks.onSuccess : undefined,
+            onFailure: typeof hooks.onFailure === 'string' ? hooks.onFailure : undefined,
+          }
+        : undefined,
+    prompt_template: doc.prompt_template,
+  };
 }
 
 export function validateWorkflowContract(input: unknown): WorkflowValidationError[] {
   const errors: WorkflowValidationError[] = [];
 
-  if (typeof input !== "object" || input === null) {
+  if (typeof input !== 'object' || input === null) {
     return [
       {
-        code: "tracker.kind.required",
-        path: "tracker.kind",
-        message: "workflow front matter must be an object",
+        code: 'tracker.kind.required',
+        path: 'tracker.kind',
+        message: 'workflow front matter must be an object',
       },
     ];
   }
@@ -75,78 +158,78 @@ export function validateWorkflowContract(input: unknown): WorkflowValidationErro
 
   if (tracker.kind === undefined) {
     errors.push({
-      code: "tracker.kind.required",
-      path: "tracker.kind",
-      message: "tracker.kind is required",
+      code: 'tracker.kind.required',
+      path: 'tracker.kind',
+      message: 'tracker.kind is required',
     });
-  } else if (tracker.kind !== "github_projects") {
+  } else if (tracker.kind !== 'github_projects') {
     errors.push({
-      code: "tracker.kind.unsupported",
-      path: "tracker.kind",
+      code: 'tracker.kind.unsupported',
+      path: 'tracker.kind',
       message: "tracker.kind must be 'github_projects'",
     });
   }
 
-  if (typeof github.owner !== "string" || github.owner.trim() === "") {
+  if (typeof github.owner !== 'string' || github.owner.trim() === '') {
     errors.push({
-      code: "tracker.github.owner.required",
-      path: "tracker.github.owner",
-      message: "tracker.github.owner is required",
+      code: 'tracker.github.owner.required',
+      path: 'tracker.github.owner',
+      message: 'tracker.github.owner is required',
     });
   }
 
   if (
-    typeof github.projectNumber !== "number" ||
+    typeof github.projectNumber !== 'number' ||
     !Number.isInteger(github.projectNumber) ||
     github.projectNumber <= 0
   ) {
     errors.push({
-      code: "tracker.github.projectNumber.invalid",
-      path: "tracker.github.projectNumber",
-      message: "tracker.github.projectNumber must be a positive integer",
+      code: 'tracker.github.projectNumber.invalid',
+      path: 'tracker.github.projectNumber',
+      message: 'tracker.github.projectNumber must be a positive integer',
     });
   }
 
   const tokenEnv =
-    typeof auth.tokenEnv === "string" && auth.tokenEnv.trim() !== ""
+    typeof auth.tokenEnv === 'string' && auth.tokenEnv.trim() !== ''
       ? auth.tokenEnv
-      : typeof github.tokenEnv === "string" && github.tokenEnv.trim() !== ""
-      ? github.tokenEnv
-      : undefined;
+      : typeof github.tokenEnv === 'string' && github.tokenEnv.trim() !== ''
+        ? github.tokenEnv
+        : undefined;
 
   if (!tokenEnv) {
     errors.push({
-      code: "tracker.auth.tokenEnv.required",
-      path: "tracker.auth.tokenEnv",
-      message: "tracker auth token env var is required (e.g. GITHUB_TOKEN)",
+      code: 'tracker.auth.tokenEnv.required',
+      path: 'tracker.auth.tokenEnv',
+      message: 'tracker auth token env var is required (e.g. GITHUB_TOKEN)',
     });
   }
 
   if (
-    typeof polling.intervalMs !== "number" ||
+    typeof polling.intervalMs !== 'number' ||
     !Number.isFinite(polling.intervalMs) ||
     polling.intervalMs < 1000
   ) {
     errors.push({
-      code: "polling.intervalMs.invalid",
-      path: "polling.intervalMs",
-      message: "polling.intervalMs must be a number >= 1000",
+      code: 'polling.intervalMs.invalid',
+      path: 'polling.intervalMs',
+      message: 'polling.intervalMs must be a number >= 1000',
     });
   }
 
-  if (typeof workspace.baseDir !== "string" || workspace.baseDir.trim() === "") {
+  if (typeof workspace.baseDir !== 'string' || workspace.baseDir.trim() === '') {
     errors.push({
-      code: "workspace.baseDir.required",
-      path: "workspace.baseDir",
-      message: "workspace.baseDir is required",
+      code: 'workspace.baseDir.required',
+      path: 'workspace.baseDir',
+      message: 'workspace.baseDir is required',
     });
   }
 
-  if (typeof agent.command !== "string" || agent.command.trim() === "") {
+  if (typeof agent.command !== 'string' || agent.command.trim() === '') {
     errors.push({
-      code: "agent.command.required",
-      path: "agent.command",
-      message: "agent.command is required",
+      code: 'agent.command.required',
+      path: 'agent.command',
+      message: 'agent.command is required',
     });
   }
 

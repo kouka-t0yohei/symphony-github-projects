@@ -1,11 +1,11 @@
-import { JsonConsoleLogger, type Logger } from "./logging/logger.js";
-import { PollingRuntime, type OrchestratorRuntime } from "./orchestrator/runtime.js";
-import { GitHubProjectsAdapterPlaceholder, type TrackerAdapter } from "./tracker/adapter.js";
+import { JsonConsoleLogger, type Logger } from './logging/logger.js';
+import { PollingRuntime, type OrchestratorRuntime } from './orchestrator/runtime.js';
+import { GitHubProjectsAdapterPlaceholder, type TrackerAdapter } from './tracker/adapter.js';
 import {
-  NotImplementedWorkflowLoader,
-  type WorkflowContract,
+  FileWorkflowLoader,
+  type LoadedWorkflowContract,
   type WorkflowLoader,
-} from "./workflow/contract.js";
+} from './workflow/contract.js';
 
 export interface BootstrapDependencies {
   workflowLoader?: WorkflowLoader;
@@ -14,7 +14,7 @@ export interface BootstrapDependencies {
 }
 
 export interface BootstrapResult {
-  workflow: WorkflowContract;
+  workflow: LoadedWorkflowContract;
   runtime: OrchestratorRuntime;
   logger: Logger;
 }
@@ -23,7 +23,7 @@ export async function bootstrapFromWorkflow(
   workflowPath: string,
   deps: BootstrapDependencies = {},
 ): Promise<BootstrapResult> {
-  const workflowLoader = deps.workflowLoader ?? new NotImplementedWorkflowLoader();
+  const workflowLoader = deps.workflowLoader ?? new FileWorkflowLoader();
   const tracker = deps.trackerAdapter ?? new GitHubProjectsAdapterPlaceholder();
   const logger = deps.logger ?? new JsonConsoleLogger();
 

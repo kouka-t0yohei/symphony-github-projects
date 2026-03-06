@@ -1,12 +1,12 @@
-import test from "node:test";
-import assert from "node:assert/strict";
+import test from 'node:test';
+import assert from 'node:assert/strict';
 
-import { bootstrapFromWorkflow } from "./bootstrap.js";
-import type { Logger } from "./logging/logger.js";
-import type { WorkflowContract, WorkflowLoader } from "./workflow/contract.js";
+import { bootstrapFromWorkflow } from './bootstrap.js';
+import type { Logger } from './logging/logger.js';
+import type { LoadedWorkflowContract, WorkflowLoader } from './workflow/contract.js';
 
 class StubWorkflowLoader implements WorkflowLoader {
-  async load(_path: string): Promise<WorkflowContract> {
+  async load(_path: string): Promise<LoadedWorkflowContract> {
     return {
       tracker: {
         kind: 'github_projects',
@@ -26,6 +26,7 @@ class StubWorkflowLoader implements WorkflowLoader {
       agent: {
         command: 'codex',
       },
+      prompt_template: 'Run the workflow',
     };
   }
 }
@@ -42,18 +43,18 @@ class CapturingLogger implements Logger {
   error(_message: string, _context?: Record<string, unknown>): void {}
 }
 
-test("bootstrapFromWorkflow wires runtime and emits bootstrap log", async () => {
+test('bootstrapFromWorkflow wires runtime and emits bootstrap log', async () => {
   const logger = new CapturingLogger();
 
-  const result = await bootstrapFromWorkflow("./WORKFLOW.md", {
+  const result = await bootstrapFromWorkflow('./WORKFLOW.md', {
     workflowLoader: new StubWorkflowLoader(),
     logger,
   });
 
   assert.equal(result.workflow.tracker.kind, 'github_projects');
-  assert.equal(typeof result.runtime.tick, "function");
+  assert.equal(typeof result.runtime.tick, 'function');
 
-  const bootstrapLog = logger.messages.find((entry) => entry.message === "bootstrap.ready");
+  const bootstrapLog = logger.messages.find((entry) => entry.message === 'bootstrap.ready');
   assert.ok(bootstrapLog);
   assert.equal(bootstrapLog?.context?.maxConcurrency, 2);
 });
