@@ -128,7 +128,7 @@ function resolveActiveStates(workflow: LoadedWorkflowContract): string[] | undef
   return values.length > 0 ? values : undefined;
 }
 
-let projectIdCache = new Map<string, string>();
+const projectIdCache = new Map<string, string>();
 
 async function resolveProjectId(client: GraphQLClient, owner: string, projectNumber: number): Promise<string> {
   const key = `${owner}#${projectNumber}`;
