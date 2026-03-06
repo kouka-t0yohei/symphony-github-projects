@@ -1,4 +1,6 @@
 export * from "./bootstrap.js";
+export * from "./config/runtime-config.js";
+export * from "./config/resolver.js";
 export * from "./logging/logger.js";
 export * from "./model/work-item.js";
 export * from "./orchestrator/runtime.js";
