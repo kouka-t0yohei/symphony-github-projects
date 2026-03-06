@@ -125,7 +125,7 @@ export class PollingRuntime implements OrchestratorRuntime {
     const maxConcurrency = this.resolveMaxConcurrency();
     if (maxConcurrency <= 0) {
       this.logger.warn('runtime.preflight.invalid_concurrency', {
-        maxConcurrency: this.workflow.polling.maxConcurrency,
+        maxConcurrency: this.workflow.polling?.maxConcurrency ?? this.workflow.runtime?.maxConcurrency,
       });
       return;
     }
@@ -549,7 +549,7 @@ export class PollingRuntime implements OrchestratorRuntime {
   }
 
   private resolveMaxConcurrency(): number {
-    const configured = this.workflow.polling.maxConcurrency;
+    const configured = this.workflow.polling?.maxConcurrency ?? this.workflow.runtime?.maxConcurrency;
     if (typeof configured !== 'number' || !Number.isFinite(configured)) {
       return 1;
     }

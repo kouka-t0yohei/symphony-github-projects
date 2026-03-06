@@ -73,26 +73,29 @@ A minimal `WORKFLOW.md`:
 ---
 tracker:
   kind: github_projects
-  github:
-    owner: your-org
-    projectNumber: 1
-    tokenEnv: GITHUB_TOKEN
 
-polling:
-  intervalMs: 30000
-  maxConcurrency: 2
+runtime:
+  poll_interval_ms: 30000
+  max_concurrency: 2
 
 workspace:
-  baseDir: ~/symphony-workspaces
+  root: ~/symphony-workspaces
 
 hooks:
+  timeout_ms: 120000
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
     npm install
 
 agent:
   command: codex app-server
-  maxTurns: 20
+  max_turns: 20
+
+extensions:
+  github_projects:
+    owner: your-org
+    project_number: 1
+    token_env: GITHUB_TOKEN
 ---
 
 You are working on GitHub Project item {{ issue.identifier }}.
@@ -122,24 +125,26 @@ to be version-controlled alongside your code.
 
 ### Front Matter Keys
 
-| Key                      | Type     | Default                    | Description                                       |
-| ------------------------ | -------- | -------------------------- | ------------------------------------------------- |
-| `tracker.kind`           | string   | —                          | Must be `github_projects`                         |
-| `tracker.github.owner`   | string   | —                          | GitHub user or org                                |
-| `tracker.github.projectNumber` | integer | —                     | Project board number                              |
-| `tracker.github.tokenEnv`| string  | `GITHUB_TOKEN`             | Environment variable holding the auth token       |
-| `tracker.github.type`    | string   | `org`                      | `org` or `user`                                   |
-| `polling.intervalMs`     | integer  | `30000`                    | Polling interval in milliseconds (≥ 1000)         |
-| `polling.maxConcurrency` | integer  | `1`                        | Max concurrent agent sessions                     |
-| `workspace.baseDir`      | string   | —                          | Root directory for per-item workspaces            |
-| `agent.command`          | string   | —                          | Command to launch the coding agent                |
-| `agent.args`             | string[] | `[]`                       | Additional arguments                              |
-| `agent.maxTurns`         | integer  | `20`                       | Max back-to-back turns per agent session          |
-| `agent.timeoutMs`        | integer  | `900000`                   | Per-turn timeout                                  |
-| `hooks.after_create`     | string   | —                          | Shell script run after workspace creation         |
-| `hooks.before_run`       | string   | —                          | Shell script run before each agent attempt        |
-| `hooks.after_run`        | string   | —                          | Shell script run after each agent attempt         |
-| `hooks.before_remove`    | string   | —                          | Shell script run before workspace deletion        |
+Core contract (canonical):
+
+- `tracker.kind` — must be `github_projects`
+- `runtime.poll_interval_ms` / `runtime.max_concurrency`
+- `runtime.retry.{continuation_delay_ms,failure_base_delay_ms,failure_multiplier,failure_max_delay_ms}`
+- `workspace.root`
+- `agent.command`, `agent.args`, `agent.max_turns`
+- `agent.timeouts.{turn_timeout_ms,read_timeout_ms,stall_timeout_ms,hooks_timeout_ms}`
+- `hooks.{after_create,before_run,after_run,before_remove,timeout_ms}`
+
+GitHub Projects extension namespace:
+
+- `extensions.github_projects.owner`
+- `extensions.github_projects.project_number`
+- `extensions.github_projects.token_env`
+- `extensions.github_projects.type`
+
+Compatibility mapping is built-in for existing keys (`polling.intervalMs`, `workspace.baseDir`,
+`agent.maxTurns`, `tracker.github.*`, and camelCase timeout/retry fields), so older WORKFLOW files
+continue to load while runtime uses one canonical typed model.
 
 ### Prompt Template
 

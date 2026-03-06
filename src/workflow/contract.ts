@@ -6,8 +6,9 @@ export type WorkflowValidationErrorCode =
   | 'tracker.github.owner.required'
   | 'tracker.github.projectNumber.invalid'
   | 'tracker.auth.tokenEnv.required'
-  | 'polling.intervalMs.invalid'
-  | 'workspace.baseDir.required'
+  | 'runtime.pollIntervalMs.invalid'
+  | 'runtime.maxConcurrency.invalid'
+  | 'workspace.root.required'
   | 'agent.command.required';
 
 export interface WorkflowValidationError {
@@ -26,21 +27,48 @@ export interface WorkflowContract {
       type?: 'org' | 'user';
     };
   };
+  runtime: {
+    pollIntervalMs: number;
+    maxConcurrency?: number;
+    retry?: {
+      continuationDelayMs?: number;
+      failureBaseDelayMs?: number;
+      failureMultiplier?: number;
+      failureMaxDelayMs?: number;
+    };
+  };
+  // legacy accessor kept for compatibility
   polling: {
     intervalMs: number;
     maxConcurrency?: number;
   };
   workspace: {
-    baseDir: string;
+    root?: string;
+    baseDir?: string;
   };
   agent: {
     command: string;
     args?: string[];
+    maxTurns?: number;
+    timeouts?: {
+      turnTimeoutMs?: number;
+      readTimeoutMs?: number;
+      stallTimeoutMs?: number;
+      hooksTimeoutMs?: number;
+    };
   };
   hooks?: {
+    after_create?: string;
+    before_run?: string;
+    after_run?: string;
+    before_remove?: string;
+    // legacy aliases
     onStart?: string;
     onSuccess?: string;
     onFailure?: string;
+  };
+  extensions?: {
+    github_projects?: Record<string, unknown>;
   };
 }
 
@@ -83,56 +111,134 @@ export function buildContract(doc: WorkflowDocument): LoadedWorkflowContract {
   }
 
   const config = doc.config as Record<string, unknown>;
-  const tracker = config.tracker as Record<string, unknown>;
-  const github = tracker.github as Record<string, unknown>;
-  const auth = (tracker.auth ?? {}) as Record<string, unknown>;
-  const polling = config.polling as Record<string, unknown>;
-  const workspace = config.workspace as Record<string, unknown>;
-  const agent = config.agent as Record<string, unknown>;
-  const hooks = (config.hooks ?? {}) as Record<string, unknown>;
+
+  const trackerKind = coerceString(readPath(config, ['tracker', 'kind'])) as 'github_projects';
+
+  const owner =
+    coerceString(readPath(config, ['tracker', 'github', 'owner'])) ??
+    coerceString(readPath(config, ['extensions', 'github_projects', 'owner']))!;
+
+  const projectNumber =
+    coerceNumber(readPath(config, ['tracker', 'github', 'projectNumber'])) ??
+    coerceNumber(readPath(config, ['extensions', 'github_projects', 'project_number']))!;
 
   const tokenEnv =
-    typeof auth.tokenEnv === 'string' && auth.tokenEnv.trim() !== ''
-      ? auth.tokenEnv
-      : (github.tokenEnv as string);
+    coerceString(readPath(config, ['tracker', 'auth', 'tokenEnv'])) ??
+    coerceString(readPath(config, ['tracker', 'github', 'tokenEnv'])) ??
+    coerceString(readPath(config, ['extensions', 'github_projects', 'token_env']))!;
 
-  return {
+  const githubType =
+    (coerceString(readPath(config, ['tracker', 'github', 'type'])) as 'org' | 'user' | undefined) ??
+    (coerceString(readPath(config, ['extensions', 'github_projects', 'type'])) as
+      | 'org'
+      | 'user'
+      | undefined);
+
+  const pollIntervalMs =
+    coerceNumber(readPath(config, ['runtime', 'pollIntervalMs'])) ??
+    coerceNumber(readPath(config, ['runtime', 'poll_interval_ms'])) ??
+    coerceNumber(readPath(config, ['polling', 'intervalMs']))!;
+
+  const maxConcurrency =
+    coerceNumber(readPath(config, ['runtime', 'maxConcurrency'])) ??
+    coerceNumber(readPath(config, ['runtime', 'max_concurrency'])) ??
+    coerceNumber(readPath(config, ['polling', 'maxConcurrency']));
+
+  const workspaceRoot =
+    coerceString(readPath(config, ['workspace', 'root'])) ??
+    coerceString(readPath(config, ['workspace', 'baseDir']))!;
+
+  const hooks = (readPath(config, ['hooks']) as Record<string, unknown> | undefined) ?? {};
+  const extensions =
+    (readPath(config, ['extensions']) as Record<string, unknown> | undefined) ?? undefined;
+
+  const contract: LoadedWorkflowContract = {
     tracker: {
-      kind: 'github_projects',
+      kind: trackerKind,
       github: {
-        owner: github.owner as string,
-        projectNumber: github.projectNumber as number,
+        owner,
+        projectNumber,
         tokenEnv,
-        type: github.type as 'org' | 'user' | undefined,
+        type: githubType,
       },
     },
-    polling: {
-      intervalMs: polling.intervalMs as number,
-      maxConcurrency:
-        typeof polling.maxConcurrency === 'number' && Number.isFinite(polling.maxConcurrency)
-          ? polling.maxConcurrency
-          : undefined,
+    runtime: {
+      pollIntervalMs,
+      maxConcurrency,
+      retry: {
+        continuationDelayMs:
+          coerceNumber(readPath(config, ['runtime', 'retry', 'continuationDelayMs'])) ??
+          coerceNumber(readPath(config, ['runtime', 'retry', 'continuation_delay_ms'])),
+        failureBaseDelayMs:
+          coerceNumber(readPath(config, ['runtime', 'retry', 'failureBaseDelayMs'])) ??
+          coerceNumber(readPath(config, ['runtime', 'retry', 'failure_base_delay_ms'])),
+        failureMultiplier:
+          coerceNumber(readPath(config, ['runtime', 'retry', 'failureMultiplier'])) ??
+          coerceNumber(readPath(config, ['runtime', 'retry', 'failure_multiplier'])),
+        failureMaxDelayMs:
+          coerceNumber(readPath(config, ['runtime', 'retry', 'failureMaxDelayMs'])) ??
+          coerceNumber(readPath(config, ['runtime', 'retry', 'failure_max_delay_ms'])),
+      },
     },
     workspace: {
-      baseDir: workspace.baseDir as string,
+      root: workspaceRoot,
+      baseDir: workspaceRoot,
     },
     agent: {
-      command: agent.command as string,
+      command: coerceString(readPath(config, ['agent', 'command']))!,
       args:
-        Array.isArray(agent.args) && agent.args.every((v) => typeof v === 'string')
-          ? (agent.args as string[])
+        (readPath(config, ['agent', 'args']) as unknown[] | undefined)?.every((v) => typeof v === 'string')
+          ? ((readPath(config, ['agent', 'args']) as string[]) ?? undefined)
           : undefined,
+      maxTurns:
+        coerceNumber(readPath(config, ['agent', 'maxTurns'])) ??
+        coerceNumber(readPath(config, ['agent', 'max_turns'])),
+      timeouts: {
+        turnTimeoutMs:
+          coerceNumber(readPath(config, ['agent', 'timeouts', 'turnTimeoutMs'])) ??
+          coerceNumber(readPath(config, ['agent', 'timeouts', 'turn_timeout_ms'])) ??
+          coerceNumber(readPath(config, ['agent', 'turnTimeoutMs'])),
+        readTimeoutMs:
+          coerceNumber(readPath(config, ['agent', 'timeouts', 'readTimeoutMs'])) ??
+          coerceNumber(readPath(config, ['agent', 'timeouts', 'read_timeout_ms'])) ??
+          coerceNumber(readPath(config, ['agent', 'readTimeoutMs'])),
+        stallTimeoutMs:
+          coerceNumber(readPath(config, ['agent', 'timeouts', 'stallTimeoutMs'])) ??
+          coerceNumber(readPath(config, ['agent', 'timeouts', 'stall_timeout_ms'])) ??
+          coerceNumber(readPath(config, ['agent', 'stallTimeoutMs'])),
+        hooksTimeoutMs:
+          coerceNumber(readPath(config, ['agent', 'timeouts', 'hooksTimeoutMs'])) ??
+          coerceNumber(readPath(config, ['agent', 'timeouts', 'hooks_timeout_ms'])) ??
+          coerceNumber(readPath(config, ['hooks', 'timeoutMs'])) ??
+          coerceNumber(readPath(config, ['hooks', 'timeout_ms'])),
+      },
     },
     hooks:
       typeof hooks === 'object'
         ? {
-            onStart: typeof hooks.onStart === 'string' ? hooks.onStart : undefined,
-            onSuccess: typeof hooks.onSuccess === 'string' ? hooks.onSuccess : undefined,
-            onFailure: typeof hooks.onFailure === 'string' ? hooks.onFailure : undefined,
+            after_create: coerceString(hooks.after_create),
+            before_run: coerceString(hooks.before_run),
+            after_run: coerceString(hooks.after_run),
+            before_remove: coerceString(hooks.before_remove),
+            onStart: coerceString(hooks.onStart),
+            onSuccess: coerceString(hooks.onSuccess),
+            onFailure: coerceString(hooks.onFailure),
           }
         : undefined,
+    extensions: {
+      github_projects:
+        typeof extensions?.github_projects === 'object'
+          ? (extensions.github_projects as Record<string, unknown>)
+          : undefined,
+    },
+    polling: {
+      intervalMs: pollIntervalMs,
+      maxConcurrency,
+    },
     prompt_template: doc.prompt_template,
   };
+
+  return contract;
 }
 
 export function validateWorkflowContract(input: unknown): WorkflowValidationError[] {
@@ -149,20 +255,15 @@ export function validateWorkflowContract(input: unknown): WorkflowValidationErro
   }
 
   const record = input as Record<string, unknown>;
-  const tracker = (record.tracker ?? {}) as Record<string, unknown>;
-  const github = (tracker.github ?? {}) as Record<string, unknown>;
-  const auth = (tracker.auth ?? {}) as Record<string, unknown>;
-  const polling = (record.polling ?? {}) as Record<string, unknown>;
-  const workspace = (record.workspace ?? {}) as Record<string, unknown>;
-  const agent = (record.agent ?? {}) as Record<string, unknown>;
 
-  if (tracker.kind === undefined) {
+  const trackerKind = coerceString(readPath(record, ['tracker', 'kind']));
+  if (trackerKind === undefined) {
     errors.push({
       code: 'tracker.kind.required',
       path: 'tracker.kind',
       message: 'tracker.kind is required',
     });
-  } else if (tracker.kind !== 'github_projects') {
+  } else if (trackerKind !== 'github_projects') {
     errors.push({
       code: 'tracker.kind.unsupported',
       path: 'tracker.kind',
@@ -170,7 +271,10 @@ export function validateWorkflowContract(input: unknown): WorkflowValidationErro
     });
   }
 
-  if (typeof github.owner !== 'string' || github.owner.trim() === '') {
+  const owner =
+    coerceString(readPath(record, ['tracker', 'github', 'owner'])) ??
+    coerceString(readPath(record, ['extensions', 'github_projects', 'owner']));
+  if (!owner) {
     errors.push({
       code: 'tracker.github.owner.required',
       path: 'tracker.github.owner',
@@ -178,11 +282,11 @@ export function validateWorkflowContract(input: unknown): WorkflowValidationErro
     });
   }
 
-  if (
-    typeof github.projectNumber !== 'number' ||
-    !Number.isInteger(github.projectNumber) ||
-    github.projectNumber <= 0
-  ) {
+  const projectNumber =
+    coerceNumber(readPath(record, ['tracker', 'github', 'projectNumber'])) ??
+    coerceNumber(readPath(record, ['extensions', 'github_projects', 'project_number']));
+
+  if (typeof projectNumber !== 'number' || !Number.isInteger(projectNumber) || projectNumber <= 0) {
     errors.push({
       code: 'tracker.github.projectNumber.invalid',
       path: 'tracker.github.projectNumber',
@@ -191,11 +295,9 @@ export function validateWorkflowContract(input: unknown): WorkflowValidationErro
   }
 
   const tokenEnv =
-    typeof auth.tokenEnv === 'string' && auth.tokenEnv.trim() !== ''
-      ? auth.tokenEnv
-      : typeof github.tokenEnv === 'string' && github.tokenEnv.trim() !== ''
-        ? github.tokenEnv
-        : undefined;
+    coerceString(readPath(record, ['tracker', 'auth', 'tokenEnv'])) ??
+    coerceString(readPath(record, ['tracker', 'github', 'tokenEnv'])) ??
+    coerceString(readPath(record, ['extensions', 'github_projects', 'token_env']));
 
   if (!tokenEnv) {
     errors.push({
@@ -205,27 +307,51 @@ export function validateWorkflowContract(input: unknown): WorkflowValidationErro
     });
   }
 
+  const pollIntervalMs =
+    coerceNumber(readPath(record, ['runtime', 'pollIntervalMs'])) ??
+    coerceNumber(readPath(record, ['runtime', 'poll_interval_ms'])) ??
+    coerceNumber(readPath(record, ['polling', 'intervalMs']));
+
   if (
-    typeof polling.intervalMs !== 'number' ||
-    !Number.isFinite(polling.intervalMs) ||
-    polling.intervalMs < 1000
+    typeof pollIntervalMs !== 'number' ||
+    !Number.isFinite(pollIntervalMs) ||
+    pollIntervalMs < 1000
   ) {
     errors.push({
-      code: 'polling.intervalMs.invalid',
-      path: 'polling.intervalMs',
-      message: 'polling.intervalMs must be a number >= 1000',
+      code: 'runtime.pollIntervalMs.invalid',
+      path: 'runtime.pollIntervalMs',
+      message: 'runtime.pollIntervalMs must be a number >= 1000',
     });
   }
 
-  if (typeof workspace.baseDir !== 'string' || workspace.baseDir.trim() === '') {
+  const maxConcurrency =
+    coerceNumber(readPath(record, ['runtime', 'maxConcurrency'])) ??
+    coerceNumber(readPath(record, ['runtime', 'max_concurrency'])) ??
+    coerceNumber(readPath(record, ['polling', 'maxConcurrency']));
+
+  if (
+    maxConcurrency !== undefined &&
+    (!Number.isFinite(maxConcurrency) || !Number.isInteger(maxConcurrency) || maxConcurrency < 1)
+  ) {
     errors.push({
-      code: 'workspace.baseDir.required',
-      path: 'workspace.baseDir',
-      message: 'workspace.baseDir is required',
+      code: 'runtime.maxConcurrency.invalid',
+      path: 'runtime.maxConcurrency',
+      message: 'runtime.maxConcurrency must be an integer >= 1',
     });
   }
 
-  if (typeof agent.command !== 'string' || agent.command.trim() === '') {
+  const workspaceRoot =
+    coerceString(readPath(record, ['workspace', 'root'])) ??
+    coerceString(readPath(record, ['workspace', 'baseDir']));
+  if (!workspaceRoot) {
+    errors.push({
+      code: 'workspace.root.required',
+      path: 'workspace.root',
+      message: 'workspace.root is required',
+    });
+  }
+
+  if (!coerceString(readPath(record, ['agent', 'command']))) {
     errors.push({
       code: 'agent.command.required',
       path: 'agent.command',
@@ -234,4 +360,24 @@ export function validateWorkflowContract(input: unknown): WorkflowValidationErro
   }
 
   return errors;
+}
+
+function readPath(input: Record<string, unknown>, path: string[]): unknown {
+  let cursor: unknown = input;
+  for (const key of path) {
+    if (typeof cursor !== 'object' || cursor === null || Array.isArray(cursor)) {
+      return undefined;
+    }
+    cursor = (cursor as Record<string, unknown>)[key];
+  }
+  return cursor;
+}
+
+function coerceString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
+function coerceNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  return undefined;
 }
