@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { bootstrapFromWorkflow } from './bootstrap.js';
+import { bootstrapFromWorkflow, BootstrapConfigurationError } from './bootstrap.js';
 import type { Logger } from './logging/logger.js';
 import type { LoadedWorkflowContract, WorkflowLoader } from './workflow/contract.js';
 
@@ -13,7 +13,7 @@ class StubWorkflowLoader implements WorkflowLoader {
         github: {
           owner: 'kouka-t0yohei',
           projectNumber: 1,
-          tokenEnv: 'GITHUB_TOKEN',
+          tokenEnv: 'BOOTSTRAP_TEST_TOKEN',
         },
       },
       runtime: {
@@ -50,6 +50,7 @@ class CapturingLogger implements Logger {
 
 test('bootstrapFromWorkflow wires runtime and emits bootstrap log', async () => {
   const logger = new CapturingLogger();
+  process.env.BOOTSTRAP_TEST_TOKEN = 'test-token';
 
   const result = await bootstrapFromWorkflow('./WORKFLOW.md', {
     workflowLoader: new StubWorkflowLoader(),
@@ -62,4 +63,20 @@ test('bootstrapFromWorkflow wires runtime and emits bootstrap log', async () => 
   const bootstrapLog = logger.messages.find((entry) => entry.message === 'bootstrap.ready');
   assert.ok(bootstrapLog);
   assert.equal(bootstrapLog?.context?.maxConcurrency, 2);
+});
+
+test('bootstrapFromWorkflow fails fast when tracker auth env var is missing', async () => {
+  delete process.env.BOOTSTRAP_TEST_TOKEN;
+
+  await assert.rejects(
+    bootstrapFromWorkflow('./WORKFLOW.md', {
+      workflowLoader: new StubWorkflowLoader(),
+      logger: new CapturingLogger(),
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof BootstrapConfigurationError);
+      assert.match((error as Error).message, /BOOTSTRAP_TEST_TOKEN/);
+      return true;
+    },
+  );
 });
