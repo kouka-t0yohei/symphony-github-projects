@@ -9,6 +9,7 @@ export * from './tracker/graphql-client.js';
 export * from './tracker/github-projects-writer.js';
 export * from './agent/codex-app-server.js';
 export * from './workspace/hooks.js';
+export * from './orchestrator/reconciler.js';
 export * from './prompt/template.js';
 
 export {
