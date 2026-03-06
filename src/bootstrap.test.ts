@@ -16,11 +16,16 @@ class StubWorkflowLoader implements WorkflowLoader {
           tokenEnv: 'GITHUB_TOKEN',
         },
       },
+      runtime: {
+        pollIntervalMs: 60_000,
+        maxConcurrency: 2,
+      },
       polling: {
         intervalMs: 60_000,
         maxConcurrency: 2,
       },
       workspace: {
+        root: './tmp/workspaces',
         baseDir: './tmp/workspaces',
       },
       agent: {

@@ -86,8 +86,9 @@ const workflow = {
     kind: 'github_projects' as const,
     github: { owner: 'o', projectNumber: 1, tokenEnv: 'GITHUB_TOKEN' },
   },
+  runtime: { pollIntervalMs: 1000, maxConcurrency: 1 },
   polling: { intervalMs: 1000, maxConcurrency: 1 },
-  workspace: { baseDir: '/tmp' },
+  workspace: { root: '/tmp', baseDir: '/tmp' },
   agent: { command: 'codex' },
 };
 

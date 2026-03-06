@@ -20,19 +20,29 @@ test('buildContract maps WorkflowDocument to LoadedWorkflowContract', () => {
           tokenEnv: 'GITHUB_TOKEN',
         },
       },
-      polling: {
-        intervalMs: 5000,
+      runtime: {
+        pollIntervalMs: 5000,
         maxConcurrency: 3,
+        retry: {
+          continuationDelayMs: 2000,
+        },
       },
       workspace: {
-        baseDir: './tmp/workspaces',
+        root: './tmp/workspaces',
       },
       agent: {
         command: 'codex',
         args: ['run'],
+        maxTurns: 20,
+        timeouts: {
+          turnTimeoutMs: 300000,
+          readTimeoutMs: 15000,
+          stallTimeoutMs: 60000,
+          hooksTimeoutMs: 45000,
+        },
       },
       hooks: {
-        onStart: 'echo start',
+        after_create: 'echo start',
       },
     },
     prompt_template: 'Do the thing',
@@ -43,11 +53,57 @@ test('buildContract maps WorkflowDocument to LoadedWorkflowContract', () => {
   assert.equal(contract.tracker.github.owner, 'kouka-t0yohei');
   assert.equal(contract.tracker.github.projectNumber, 123);
   assert.equal(contract.tracker.github.tokenEnv, 'GITHUB_TOKEN');
-  assert.equal(contract.polling.intervalMs, 5000);
-  assert.equal(contract.polling.maxConcurrency, 3);
+  assert.equal(contract.runtime.pollIntervalMs, 5000);
+  assert.equal(contract.runtime.maxConcurrency, 3);
+  assert.equal(contract.runtime.retry?.continuationDelayMs, 2000);
+  assert.equal(contract.workspace.root, './tmp/workspaces');
   assert.deepEqual(contract.agent.args, ['run']);
-  assert.equal(contract.hooks?.onStart, 'echo start');
+  assert.equal(contract.agent.maxTurns, 20);
+  assert.equal(contract.agent.timeouts?.turnTimeoutMs, 300000);
+  assert.equal(contract.hooks?.after_create, 'echo start');
+  assert.equal(contract.polling.intervalMs, 5000);
   assert.equal(contract.prompt_template, 'Do the thing');
+});
+
+test('buildContract supports legacy keys and github extension namespace', () => {
+  const doc: WorkflowDocument = {
+    config: {
+      tracker: {
+        kind: 'github_projects',
+        github: {
+          owner: 'legacy-owner',
+          projectNumber: 321,
+          tokenEnv: 'LEGACY_TOKEN',
+        },
+      },
+      polling: {
+        intervalMs: 8000,
+        maxConcurrency: 2,
+      },
+      workspace: {
+        baseDir: './legacy/workspaces',
+      },
+      agent: {
+        command: 'codex',
+      },
+      extensions: {
+        github_projects: {
+          custom_field_map: {
+            estimate: 'Story Points',
+          },
+        },
+      },
+    },
+    prompt_template: 'Prompt',
+  };
+
+  const contract = buildContract(doc);
+  assert.equal(contract.runtime.pollIntervalMs, 8000);
+  assert.equal(contract.workspace.root, './legacy/workspaces');
+  assert.equal(contract.tracker.github.tokenEnv, 'LEGACY_TOKEN');
+  assert.deepEqual(contract.extensions?.github_projects, {
+    custom_field_map: { estimate: 'Story Points' },
+  });
 });
 
 test('buildContract surfaces validation errors clearly', () => {
@@ -83,15 +139,15 @@ test('FileWorkflowLoader reads file and returns contract with prompt template', 
     `---
 tracker:
   kind: github_projects
-  github:
+extensions:
+  github_projects:
     owner: kouka-t0yohei
-    projectNumber: 99
-  auth:
-    tokenEnv: GITHUB_TOKEN
-polling:
-  intervalMs: 5000
+    project_number: 99
+    token_env: GITHUB_TOKEN
+runtime:
+  poll_interval_ms: 5000
 workspace:
-  baseDir: ./tmp/workspaces
+  root: ./tmp/workspaces
 agent:
   command: codex
 ---

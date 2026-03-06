@@ -1,20 +1,17 @@
 ---
 tracker:
   kind: github_projects
-  github:
-    owner: your-org
-    type: org
-    projectNumber: 1
-    tokenEnv: GITHUB_TOKEN
 
-polling:
-  intervalMs: 30000
-  maxConcurrency: 2
+# Core Symphony contract (canonical)
+runtime:
+  poll_interval_ms: 30000
+  max_concurrency: 2
 
 workspace:
-  baseDir: ~/symphony-workspaces
+  root: ~/symphony-workspaces
 
 hooks:
+  timeout_ms: 120000
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
     npm install
@@ -25,7 +22,19 @@ hooks:
 
 agent:
   command: codex app-server
-  maxTurns: 20
+  max_turns: 20
+  timeouts:
+    turn_timeout_ms: 300000
+    read_timeout_ms: 15000
+    stall_timeout_ms: 120000
+
+# Tracker-specific extension namespace
+extensions:
+  github_projects:
+    owner: your-org
+    type: org
+    project_number: 1
+    token_env: GITHUB_TOKEN
 ---
 
 You are working on GitHub Project item {{ issue.identifier }}.
