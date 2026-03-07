@@ -44,6 +44,15 @@ test('spawns codex app-server with deterministic initialize -> thread/turn order
     stallTimeoutMs: 500,
     spawn: (command, args, options) => {
       spawnCalls.push({ command, args, cwd: options.cwd });
+      return fake;
+    },
+  });
+
+  const originalWrite = fake.stdin.write;
+  fake.stdin.write = (chunk: string) => {
+    const parsed = JSON.parse(chunk) as { method: string };
+
+    if (parsed.method === 'initialize') {
       queueMicrotask(() => {
         fake.emitStdoutJson({ method: 'initialized' });
         fake.emitStdoutJson({
@@ -52,13 +61,37 @@ test('spawns codex app-server with deterministic initialize -> thread/turn order
             thread_id: 't1',
             turn_id: 'turn-1',
             usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 },
-            turn: { completed: true, active_issue: false },
           },
         });
       });
-      return fake;
-    },
-  });
+    }
+
+    if (parsed.method === 'thread.start') {
+      queueMicrotask(() => {
+        fake.emitStdoutJson({
+          params: {
+            thread_id: 't1',
+          },
+        });
+      });
+    }
+
+    if (parsed.method === 'turn.start') {
+      queueMicrotask(() => {
+        fake.emitStdoutJson({
+          params: {
+            turn_id: 'turn-1',
+            turn: {
+              completed: true,
+              active_issue: false,
+            },
+          },
+        });
+      });
+    }
+
+    return originalWrite.call(fake.stdin, chunk);
+  };
 
   const result = await client.run({ renderedPrompt: 'hello codex' });
 
@@ -146,25 +179,149 @@ test('derives session id from thread id when session_id is absent', async () => 
     cwd: '/tmp/workspace',
     readTimeoutMs: 10,
     stallTimeoutMs: 500,
-    spawn: () => {
+    spawn: () => fake,
+  });
+
+  const originalWrite = fake.stdin.write;
+  fake.stdin.write = (chunk: string) => {
+    const parsed = JSON.parse(chunk) as { method: string };
+
+    if (parsed.method === 'initialize') {
       queueMicrotask(() => {
         fake.emitStdoutJson({ method: 'initialized' });
         fake.emitStdoutJson({
           params: {
             thread_id: 't-derived',
             turn_id: 'turn-1',
+          },
+        });
+      });
+    }
+
+    if (parsed.method === 'turn.start') {
+      queueMicrotask(() => {
+        fake.emitStdoutJson({
+          params: {
+            turn_id: 'turn-1',
             turn: { completed: true, active_issue: false },
           },
         });
       });
-      return fake;
-    },
-  });
+    }
+
+    return originalWrite.call(fake.stdin, chunk);
+  };
 
   const result = await client.run({ renderedPrompt: 'hello' });
   assert.equal(result.status, 'completed');
   assert.equal(result.state.sessionId, 'thread:t-derived');
   assert.equal(result.state.threadId, 't-derived');
+});
+
+test('falls back total token count to input+output when total_tokens missing', async () => {
+  const fake = new FakeChildProcess();
+  const client = new CodexAppServerClient({
+    cwd: '/tmp/workspace',
+    readTimeoutMs: 10,
+    stallTimeoutMs: 500,
+    spawn: () => fake,
+  });
+
+  const originalWrite = fake.stdin.write;
+  fake.stdin.write = (chunk: string) => {
+    const parsed = JSON.parse(chunk) as { method: string };
+
+    if (parsed.method === 'initialize') {
+      queueMicrotask(() => {
+        fake.emitStdoutJson({ method: 'initialized' });
+        fake.emitStdoutJson({
+          params: {
+            thread_id: 't1',
+            turn_id: 'turn-1',
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+        });
+      });
+    }
+
+    if (parsed.method === 'turn.start') {
+      queueMicrotask(() => {
+        fake.emitStdoutJson({
+          params: {
+            turn_id: 'turn-1',
+            turn: { completed: true, active_issue: false },
+            usage: { input_tokens: 7, output_tokens: 5 },
+          },
+        });
+      });
+    }
+
+    return originalWrite.call(fake.stdin, chunk);
+  };
+
+  const result = await client.run({ renderedPrompt: 'hello' });
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.usage.totalTokens, 12);
+});
+
+test('limits turns to maxTurns and returns completed with active issue', async () => {
+  const fake = new FakeChildProcess();
+  const writes: Array<{ method: string; params?: { turn?: number; message?: string } }> = [];
+  let initializedSent = false;
+
+  const client = new CodexAppServerClient({
+    cwd: '/tmp/workspace',
+    readTimeoutMs: 10,
+    stallTimeoutMs: 500,
+    maxTurns: 2,
+    spawn: () => fake,
+  });
+
+  const originalWrite = fake.stdin.write;
+  fake.stdin.write = (chunk: string) => {
+    const parsed = JSON.parse(chunk) as { method: string; params?: { turn?: number; message?: string } };
+    writes.push(parsed);
+
+    if (parsed.method === 'initialize' && !initializedSent) {
+      initializedSent = true;
+      fake.emitStdoutJson({ method: 'initialized' });
+      fake.emitStdoutJson({
+        params: {
+          thread_id: 't1',
+          turn_id: 'turn-1',
+          turn: { completed: true, active_issue: false },
+        },
+      });
+    }
+
+    if (parsed.method === 'turn.start' && parsed.params?.turn === 1) {
+      fake.emitStdoutJson({
+        params: {
+          turn_id: 'turn-1',
+          turn: { completed: true, active_issue: true },
+        },
+      });
+    }
+
+    if (parsed.method === 'turn.start' && parsed.params?.turn === 2) {
+      fake.emitStdoutJson({
+        params: {
+          turn_id: 'turn-2',
+          turn: { completed: true, active_issue: true },
+        },
+      });
+    }
+
+    return originalWrite.call(fake.stdin, chunk);
+  };
+
+  const result = await client.run({ renderedPrompt: 'first turn' });
+
+  assert.equal(writes.filter((entry) => entry.method === 'turn.start').length, 2);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.activeIssue, true);
+  assert.equal(result.state.turnsCompleted, 2);
+  assert.equal(result.state.turnsStarted, 2);
 });
 
 test('detects stall and terminates the subprocess', async () => {

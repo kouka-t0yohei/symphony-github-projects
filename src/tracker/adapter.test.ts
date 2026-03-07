@@ -174,4 +174,91 @@ describe("GitHubProjectsAdapter", () => {
 
     await assert.rejects(() => adapter.listCandidateItems(), TrackerMalformedPayloadError);
   });
+
+  it("throws malformed payload error when timestamps are missing", async () => {
+    const bad: ProjectItemNode = {
+      id: "Y",
+      content: {
+        __typename: "Issue",
+        number: 999,
+        title: "Issue 999",
+        body: "Body 999",
+        url: "https://example.com/999",
+        createdAt: undefined,
+        updatedAt: undefined,
+      },
+      fieldValues: { nodes: [] },
+    };
+
+    const adapter = new GitHubProjectsAdapter({
+      owner: 'o',
+      projectNumber: 1,
+      client: new FakeClient([{ items: [bad], hasNextPage: false, endCursor: null }]),
+    });
+
+    await assert.rejects(() => adapter.listCandidateItems(), /payload missing timestamps/i);
+  });
+
+  it('builds deterministic blocked_by list from referenced issue numbers in body', async () => {
+    const client = new FakeClient([
+      {
+        items: [
+          {
+            id: 'A',
+            content: {
+              __typename: 'Issue',
+              number: 1,
+              title: 'Issue 1',
+              body: 'Depends on #2, #3 and again #2 and #99',
+              url: 'https://example.com/1',
+              createdAt: '2026-01-01T00:00:00Z',
+              updatedAt: '2026-01-02T00:00:00Z',
+            },
+            fieldValues: { nodes: [{ __typename: 'ProjectV2ItemFieldSingleSelectValue', name: 'Todo' }] },
+          },
+          {
+            id: 'B',
+            content: {
+              __typename: 'Issue',
+              number: 2,
+              title: 'Issue 2',
+              body: 'Body',
+              url: 'https://example.com/2',
+              createdAt: '2026-01-01T00:00:00Z',
+              updatedAt: '2026-01-02T00:00:00Z',
+            },
+            fieldValues: { nodes: [{ __typename: 'ProjectV2ItemFieldSingleSelectValue', name: 'Todo' }] },
+          },
+          {
+            id: 'C',
+            content: {
+              __typename: 'Issue',
+              number: 3,
+              title: 'Issue 3',
+              body: 'Body',
+              url: 'https://example.com/3',
+              createdAt: '2026-01-01T00:00:00Z',
+              updatedAt: '2026-01-02T00:00:00Z',
+            },
+            fieldValues: { nodes: [{ __typename: 'ProjectV2ItemFieldSingleSelectValue', name: 'Todo' }] },
+          },
+        ],
+        hasNextPage: false,
+        endCursor: null,
+      },
+    ]);
+
+    const adapter = new GitHubProjectsAdapter({
+      owner: 'o',
+      projectNumber: 1,
+      client,
+      pageSize: 10,
+    });
+
+    const items = await adapter.listCandidateItems();
+    const blockedTarget = items.find((item) => item.id === 'A');
+
+    assert.ok(blockedTarget);
+    assert.deepEqual(blockedTarget.blocked_by, ['B', 'C']);
+  });
 });

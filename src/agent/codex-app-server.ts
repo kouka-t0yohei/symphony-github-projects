@@ -119,6 +119,7 @@ export class CodexAppServerClient {
     let latestEventAt = Date.now();
     let completed = false;
     let activeIssue = false;
+    let countingTurnCompletion = false;
     let errorMessage: string | undefined;
     let initialized = false;
 
@@ -160,7 +161,7 @@ export class CodexAppServerClient {
           'turn.completed',
           'completed',
         ]);
-        if (completedFlag) {
+        if (completedFlag && countingTurnCompletion) {
           completed = true;
           this.state.turnsCompleted += 1;
         }
@@ -261,6 +262,11 @@ export class CodexAppServerClient {
         };
       }
 
+      // Startup events may contain an initial turn object. Do not let it be treated
+      // as completion of the first runtime turn.
+      completed = false;
+      activeIssue = false;
+
       const threadStartParams: Record<string, string> = {
         prompt: params.renderedPrompt,
       };
@@ -280,6 +286,7 @@ export class CodexAppServerClient {
           message,
           turn,
         };
+        countingTurnCompletion = true;
         if (this.state.threadId) {
           turnParams.thread_id = this.state.threadId;
         }
@@ -320,6 +327,7 @@ export class CodexAppServerClient {
           };
         }
 
+        countingTurnCompletion = false;
         completed = false;
         if (!activeIssue) {
           child.stdin?.end();

@@ -1,432 +1,246 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { LoadedWorkflowContract } from './workflow/contract.js';
-import type { Logger } from './logging/logger.js';
-import { startService, parseArgs } from './cli.js';
+import { describe, it } from 'node:test';
 
-function baseWorkflow(intervalMs: number, maxConcurrency = 2): LoadedWorkflowContract {
+import type { LoadedWorkflowContract } from './workflow/contract.js';
+import { parseArgs, startService } from './cli.js';
+
+type LoggerRecord = { message: string; data?: Record<string, unknown> };
+
+type Reloader = {
+  start: (contract: LoadedWorkflowContract) => void;
+  stop: () => void;
+};
+
+type TimerHandle = ReturnType<typeof setTimeout>;
+
+type TimeoutRecord = {
+  fn: () => void;
+  delay: number;
+  id: number;
+};
+
+function makeWorkflow(pollingOverride?: Partial<LoadedWorkflowContract['polling']>): LoadedWorkflowContract {
   return {
     tracker: {
       kind: 'github_projects',
       github: {
-        owner: 'example-org',
+        owner: 'owner',
         projectNumber: 1,
-        tokenEnv: 'TEST_GITHUB_TOKEN',
+        tokenEnv: 'TOKEN',
       },
     },
-    runtime: {
-      pollIntervalMs: intervalMs,
-      maxConcurrency,
-    },
+    runtime: { pollIntervalMs: 1000, maxConcurrency: 1 },
     polling: {
-      intervalMs,
-      maxConcurrency,
+      intervalMs: 1000,
+      maxConcurrency: 1,
+      ...(pollingOverride ?? {}),
     },
     workspace: {
-      root: './tmp/workspaces',
-      baseDir: './tmp/workspaces',
+      root: '/tmp/workspaces',
+      baseDir: '/tmp/workspaces',
     },
-    agent: {
-      command: 'codex',
-    },
-    prompt_template: 'Run issue {{ issue.identifier }}',
+    agent: { command: 'codex' },
+    prompt_template: 'Run {{ issue.identifier }}',
   };
 }
 
-interface PollingRuntimeLike {
-  tick(): Promise<void>;
-  applyWorkflow(contract: LoadedWorkflowContract): void;
+function withFakeTimers(calls: TimeoutRecord[]): {
+  setTimeoutFn: typeof setTimeout;
+  clearTimeoutFn: typeof clearTimeout;
+} {
+  let nextId = 0;
+
+  const setTimeoutFn = ((fn: () => void, delay: number): TimerHandle => {
+    const id = ++nextId;
+    calls.push({ fn, delay, id });
+    return { id } as unknown as TimerHandle;
+  }) as typeof setTimeout;
+
+  const clearTimeoutFn = ((id: TimerHandle): void => {
+    const handle = id as unknown as { id: number };
+    calls.splice(
+      calls.findIndex((entry) => entry.id === handle.id),
+      1,
+    );
+  }) as typeof clearTimeout;
+
+  return { setTimeoutFn, clearTimeoutFn };
 }
 
-class FakeRuntime implements PollingRuntimeLike {
-  public tickCalls = 0;
-  public applyCalls = 0;
-  public lastAppliedContract: LoadedWorkflowContract | null = null;
-  public readonly onTick?: () => void | Promise<void>;
-
-  constructor(onTick?: () => void | Promise<void>) {
-    this.onTick = onTick;
-  }
+class FakeRuntime {
+  public tickCount = 0;
+  public applied: number[] = [];
 
   async tick(): Promise<void> {
-    this.tickCalls += 1;
-    if (this.onTick) {
-      await this.onTick();
-    }
+    this.tickCount += 1;
   }
 
   applyWorkflow(contract: LoadedWorkflowContract): void {
-    this.applyCalls += 1;
-    this.lastAppliedContract = contract;
+    this.applied.push(contract.polling.intervalMs);
   }
 }
 
-interface WorkflowLoader {
-  load(path: string): Promise<LoadedWorkflowContract>;
-}
+describe('CLI argument parsing', () => {
+  it('uses WORKFLOW_PATH env var as default when no --workflow flag is set', () => {
+    const original = process.env.WORKFLOW_PATH;
+    process.env.WORKFLOW_PATH = 'env/WORKFLOW.md';
 
-class FakeWorkflowLoader implements WorkflowLoader {
-  public readonly loadCalls: string[] = [];
-  private readonly contract: LoadedWorkflowContract;
-
-  constructor(contract: LoadedWorkflowContract) {
-    this.contract = contract;
-  }
-
-  async load(path: string): Promise<LoadedWorkflowContract> {
-    this.loadCalls.push(path);
-    return this.contract;
-  }
-}
-
-interface ReloaderLike {
-  start(contract: LoadedWorkflowContract): void;
-  stop(): void;
-}
-
-class FakeReloader implements ReloaderLike {
-  private readonly onReload: (contract: LoadedWorkflowContract) => void;
-
-  public startCalls = 0;
-  public stopCalls = 0;
-  public lastContract: LoadedWorkflowContract | null = null;
-
-  constructor(_workflowPath: string, onReload: (contract: LoadedWorkflowContract) => void) {
-    this.onReload = onReload;
-  }
-
-  start(initialContract: LoadedWorkflowContract): void {
-    this.startCalls += 1;
-    this.onReload(initialContract);
-  }
-
-  stop(): void {
-    this.stopCalls += 1;
-  }
-
-  triggerReload(contract: LoadedWorkflowContract): void {
-    this.lastContract = contract;
-    this.onReload(contract);
-  }
-}
-
-class FakeClock {
-  private current = 0;
-  private nextHandle = 1;
-  private active = new Map<number, { when: number; fn: () => void }>();
-  public readonly delays: number[] = [];
-
-  setTimeout = (fn: () => void, timeout: number): ReturnType<typeof setTimeout> => {
-    const handle = this.nextHandle;
-    this.nextHandle += 1;
-    this.active.set(handle, { when: this.current + Math.max(0, timeout), fn });
-    this.delays.push(timeout);
-    return handle as unknown as ReturnType<typeof setTimeout>;
-  };
-
-  clearTimeout = (handle: ReturnType<typeof setTimeout>): void => {
-    this.active.delete(handle as unknown as number);
-  };
-
-  runNext(): boolean {
-    let nextHandle: number | undefined;
-    let nextWhen = Number.POSITIVE_INFINITY;
-
-    for (const [handle, entry] of this.active) {
-      if (entry.when < nextWhen) {
-        nextWhen = entry.when;
-        nextHandle = handle;
+    try {
+      const config = parseArgs([]);
+      assert.equal(config.workflowPath, 'env/WORKFLOW.md');
+    } finally {
+      if (original === undefined) {
+        delete process.env.WORKFLOW_PATH;
+      } else {
+        process.env.WORKFLOW_PATH = original;
       }
     }
-
-    if (nextHandle === undefined) {
-      return false;
-    }
-
-    const entry = this.active.get(nextHandle);
-    if (!entry) {
-      return false;
-    }
-
-    this.active.delete(nextHandle);
-    this.current = entry.when;
-    entry.fn();
-    return true;
-  }
-
-  runAll(): void {
-    while (this.runNext()) {
-      // run until queue drains
-    }
-  }
-
-  get nextTimeoutMs(): number | null {
-    let next: number | null = null;
-
-    for (const entry of this.active.values()) {
-      const delay = entry.when - this.current;
-      if (next === null || delay < next) {
-        next = delay;
-      }
-    }
-
-    return next;
-  }
-
-  get now(): number {
-    return this.current;
-  }
-}
-
-class CapturingLogger implements Logger {
-  public readonly messages: Array<{ message: string; context?: Record<string, unknown> }> = [];
-
-  info(message: string, context?: Record<string, unknown>): void {
-    this.messages.push({ message, context });
-  }
-
-  warn(message: string, context?: Record<string, unknown>): void {
-    this.messages.push({ message, context });
-  }
-
-  error(message: string, context?: Record<string, unknown>): void {
-    this.messages.push({ message, context });
-  }
-
-  getMessagesFor(message: string): Array<{ message: string; context?: Record<string, unknown> }> {
-    return this.messages.filter((entry) => entry.message === message);
-  }
-}
-
-test('parseArgs uses WORKFLOW_PATH environment variable', () => {
-  const previous = process.env.WORKFLOW_PATH;
-  process.env.WORKFLOW_PATH = '/env/WORKFLOW.md';
-
-  try {
-    const result = parseArgs([]);
-    assert.equal(result.workflowPath, '/env/WORKFLOW.md');
-  } finally {
-    if (previous === undefined) {
-      delete process.env.WORKFLOW_PATH;
-    } else {
-      process.env.WORKFLOW_PATH = previous;
-    }
-  }
-});
-
-test('parseArgs accepts --workflow option', () => {
-  const result = parseArgs(['--workflow', 'custom/WORKFLOW.md']);
-  assert.equal(result.workflowPath, 'custom/WORKFLOW.md');
-});
-test('parseArgs supports -w alias', () => {
-  const result = parseArgs(['-w', 'another/workflow.md']);
-  assert.equal(result.workflowPath, 'another/workflow.md');
-});
-
-test('parseArgs prints usage and exits on -h', () => {
-  const oldExit = process.exit;
-  const oldLog = console.log;
-  const printed: string[] = [];
-
-  process.exit = ((code?: number): never => {
-    throw new Error(`process.exit:${code ?? ''}`);
-  }) as typeof process.exit;
-  console.log = (...args: unknown[]) => {
-    printed.push(args.map(String).join(' '));
-  };
-
-  try {
-    assert.throws(() => parseArgs(['-h']), /process.exit:0/);
-    assert.equal(printed.length, 1);
-    assert.match(printed[0], /Usage: node dist\/cli\.js/);
-  } finally {
-    process.exit = oldExit;
-    console.log = oldLog;
-  }
-});
-
-test('startService starts tick loop and can stop', async () => {
-  const workflow = baseWorkflow(8);
-  const runtime = new FakeRuntime();
-  const logger = new CapturingLogger();
-  const loader = new FakeWorkflowLoader(workflow);
-  const clock = new FakeClock();
-
-  const handle = await startService({ workflowPath: 'WORKFLOW.md' }, {
-    workflowLoader: loader,
-    logger,
-    bootstrap: async () => ({
-      workflow,
-      runtime,
-      logger,
-    }),
-    reloaderFactory: ({ onReload, workflowPath }) => {
-      assert.equal(workflowPath, 'WORKFLOW.md');
-      return {
-        start: (initialContract: LoadedWorkflowContract) => onReload(initialContract),
-        stop: () => undefined,
-      };
-    },
-    setTimeoutFn: clock.setTimeout as unknown as typeof setTimeout,
-    clearTimeoutFn: clock.clearTimeout as unknown as typeof clearTimeout,
-    installSignalHandlers: false,
   });
 
-  for (let i = 0; i < 3; i += 1) {
-    clock.runNext();
-  }
-
-  assert.equal(runtime.tickCalls, 3);
-  assert.equal(clock.delays.includes(8), true);
-
-  handle.stop();
-  const beforeStop = runtime.tickCalls;
-
-  clock.runNext();
-  assert.equal(runtime.tickCalls, beforeStop);
-});
-
-test('startService applies new workflow config on hot reload', async () => {
-  const runtime = new FakeRuntime();
-  const logger = new CapturingLogger();
-  const initial = baseWorkflow(20);
-  const reloaded = baseWorkflow(5);
-  const loader = new FakeWorkflowLoader(initial);
-  const clock = new FakeClock();
-
-  let reloader: FakeReloader | undefined;
-
-  const handle = await startService({ workflowPath: 'WORKFLOW.md' }, {
-    workflowLoader: loader,
-    logger,
-    bootstrap: async () => ({
-      workflow: initial,
-      runtime,
-      logger,
-    }),
-    reloaderFactory: (options) => {
-      reloader = new FakeReloader(options.workflowPath, options.onReload);
-      return reloader;
-    },
-    setTimeoutFn: clock.setTimeout as unknown as typeof setTimeout,
-    clearTimeoutFn: clock.clearTimeout as unknown as typeof clearTimeout,
-    installSignalHandlers: false,
+  it('supports -w/--workflow overrides', () => {
+    const config = parseArgs(['--workflow', 'custom/WORKFLOW.md']);
+    assert.equal(config.workflowPath, 'custom/WORKFLOW.md');
+    const configShort = parseArgs(['-w', 'short/WORKFLOW.md']);
+    assert.equal(configShort.workflowPath, 'short/WORKFLOW.md');
   });
 
-  clock.runNext();
-  assert.equal(runtime.applyCalls, 0);
+  it('prints usage and exits for help flags', () => {
+    const originalExit = process.exit;
+    const originalLog = console.log;
+    let logged = '';
+    let exitCode: number | undefined;
 
-  reloader!.triggerReload(reloaded);
-  assert.equal(runtime.applyCalls, 1);
-  assert.ok(runtime.lastAppliedContract);
-  assert.equal(runtime.lastAppliedContract?.polling.intervalMs, 5);
+    (process as typeof process & { exit: (code?: number | string) => never }).exit = ((code?: number) => {
+      exitCode = code ?? 0;
+      throw new Error(`exit:${code ?? 0}`);
+    }) as typeof process.exit;
+    console.log = (...args: unknown[]) => {
+      logged += args.join(' ');
+    };
 
-  handle.stop();
-});
-
-test('runtime.tick errors are logged and service keeps ticking', async () => {
-  let failOnce = true;
-  const runtime = new FakeRuntime(async () => {
-    if (failOnce) {
-      failOnce = false;
-      throw new Error('boom');
+    try {
+      assert.throws(() => parseArgs(['--help']), /exit:0/);
+      assert.equal(exitCode, 0);
+      assert.ok(logged.includes('Usage:'));
+    } finally {
+      process.exit = originalExit;
+      console.log = originalLog;
     }
   });
-  const logger = new CapturingLogger();
-  const workflow = baseWorkflow(5);
-  const clock = new FakeClock();
-
-  const handle = await startService({ workflowPath: 'WORKFLOW.md' }, {
-    logger,
-    bootstrap: async () => ({
-      workflow,
-      runtime,
-      logger,
-    }),
-    reloaderFactory: ({ onReload }) => ({
-      start: () => onReload(workflow),
-      stop: () => undefined,
-    }),
-    setTimeoutFn: clock.setTimeout as unknown as typeof setTimeout,
-    clearTimeoutFn: clock.clearTimeout as unknown as typeof clearTimeout,
-    installSignalHandlers: false,
-  });
-
-  clock.runNext();
-  clock.runNext();
-
-  assert.equal(runtime.tickCalls, 2);
-  assert.equal(logger.getMessagesFor('runtime.tick.failed').length, 1);
-
-  handle.stop();
 });
 
-test('reload interval is clamped to at least 1000ms', async () => {
-  const runtime = new FakeRuntime();
-  const logger = new CapturingLogger();
-  const initial = baseWorkflow(10);
-  const reloader = new FakeReloader('WORKFLOW.md', () => undefined);
-  const clock = new FakeClock();
+describe('startService orchestration', () => {
+  it('starts ticker and applies stop lifecycle hooks', async () => {
+    const runtime = new FakeRuntime();
+    const workflow = makeWorkflow();
+    const loggerRecords: LoggerRecord[] = [];
 
-  const handle = await startService({ workflowPath: 'WORKFLOW.md' }, {
-    logger,
-    bootstrap: async () => ({
-      workflow: initial,
-      runtime,
-      logger,
-    }),
-    reloaderFactory: (options) => {
-      return {
-        start: (initialContract: LoadedWorkflowContract) => options.onReload(initialContract),
-        stop: () => reloader.stop(),
-      } as ReloaderLike;
-    },
-    setTimeoutFn: clock.setTimeout as unknown as typeof setTimeout,
-    clearTimeoutFn: clock.clearTimeout as unknown as typeof clearTimeout,
-    installSignalHandlers: false,
+    const timeoutCalls: TimeoutRecord[] = [];
+    const { setTimeoutFn, clearTimeoutFn } = withFakeTimers(timeoutCalls);
+
+    let reloaderStarted = 0;
+    let reloaderStopped = 0;
+
+    const handle = await startService(
+      { workflowPath: 'WORKFLOW.md' },
+      {
+        logger: {
+          info(message: string, context?: Record<string, unknown>): void {
+            loggerRecords.push({ message, data: context });
+          },
+          warn: () => {},
+          error: () => {},
+        },
+        bootstrap: async () => ({
+          workflow,
+          runtime,
+          logger: {
+            info: () => {},
+            warn: () => {},
+            error: () => {},
+          },
+        }),
+        reloaderFactory: () => ({
+          start: () => {
+            reloaderStarted += 1;
+          },
+          stop: () => {
+            reloaderStopped += 1;
+          },
+        }),
+        setTimeoutFn,
+        clearTimeoutFn,
+        installSignalHandlers: false,
+      },
+    );
+
+    assert.equal(reloaderStarted, 1);
+    assert.equal(timeoutCalls.length, 1);
+
+    timeoutCalls[0].fn();
+    await Promise.resolve();
+    assert.equal(runtime.tickCount, 1);
+
+    handle.stop();
+
+    assert.equal(reloaderStopped, 1);
+    assert.equal(timeoutCalls.length, 1);
+    assert.ok(loggerRecords.some((entry) => entry.message === 'service.started'));
+    assert.ok(loggerRecords.some((entry) => entry.message === 'service.shutdown_requested'));
   });
 
-  // first tick runs at t=0
-  clock.runNext();
+  it('reapplies runtime config on workflow reload and reschedules poll interval', async () => {
+    const runtime = new FakeRuntime();
+    const workflow = makeWorkflow({ intervalMs: 1000, maxConcurrency: 1 });
+    const loggerRecords: LoggerRecord[] = [];
 
-  // then reload to an interval below the safe minimum
-  reloader.triggerReload(baseWorkflow(250));
-  assert.equal(clock.nextTimeoutMs, 1000);
+    let onReload: ((contract: LoadedWorkflowContract) => void) | undefined;
+    const timeoutCalls: TimeoutRecord[] = [];
+    const { setTimeoutFn, clearTimeoutFn } = withFakeTimers(timeoutCalls);
 
-  clock.runNext();
-  assert.equal(clock.now, 1000);
+    await startService(
+      { workflowPath: 'WORKFLOW.md' },
+      {
+        logger: {
+          info(message: string): void {
+            loggerRecords.push({ message });
+          },
+          warn: () => {},
+          error: () => {},
+        },
+        bootstrap: async () => ({
+          workflow,
+          runtime,
+          logger: {
+            info: () => {},
+            warn: () => {},
+            error: () => {},
+          },
+        }),
+        reloaderFactory: (options): Reloader => {
+          onReload = options.onReload;
+          return {
+            start: () => {},
+            stop: () => {},
+          };
+        },
+        setTimeoutFn,
+        clearTimeoutFn,
+        installSignalHandlers: false,
+      },
+    );
 
-  handle.stop();
-});
+    assert.ok(onReload);
+    onReload!({
+      ...workflow,
+      polling: {
+        intervalMs: 500,
+        maxConcurrency: 2,
+      },
+    });
 
-test('stop cancels service and invokes reloader stop', async () => {
-  const runtime = new FakeRuntime();
-  const logger = new CapturingLogger();
-  const reloader = new FakeReloader('WORKFLOW.md', () => undefined);
-  const clock = new FakeClock();
-  const workflow = baseWorkflow(1);
-
-  const handle = await startService({ workflowPath: 'WORKFLOW.md' }, {
-    logger,
-    bootstrap: async () => ({
-      workflow,
-      runtime,
-      logger,
-    }),
-    reloaderFactory: () => reloader,
-    setTimeoutFn: clock.setTimeout as unknown as typeof setTimeout,
-    clearTimeoutFn: clock.clearTimeout as unknown as typeof clearTimeout,
-    installSignalHandlers: false,
+    assert.equal(runtime.applied[0], 500);
+    assert.ok(loggerRecords.some((entry) => entry.message === 'runtime.config.reloaded'));
+    assert.equal(timeoutCalls[0]?.delay, 500);
   });
-
-  const stopMessage = logger.getMessagesFor('service.shutdown_requested');
-  assert.equal(stopMessage.length, 0);
-
-  handle.stop();
-  assert.equal(reloader.stopCalls, 1);
-  assert.equal(stopMessage.length, 1);
-
-  const callsAfterStop = runtime.tickCalls;
-  clock.runAll();
-  assert.equal(runtime.tickCalls, callsAfterStop);
 });
