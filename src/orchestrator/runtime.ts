@@ -133,10 +133,33 @@ export class PollingRuntime implements OrchestratorRuntime {
     const candidates = await this.tracker.listEligibleItems();
     const sorted = sortCandidates(candidates);
     const dispatchable = sorted.filter((item) => this.isDispatchable(item.id));
+    const todoBlockedByNonTerminal = await this.findTodoItemsBlockedByNonTerminal(dispatchable);
+    const maxConcurrencyByState = this.resolveMaxConcurrencyByState();
 
     let dispatched = 0;
     const capacity = Math.max(0, maxConcurrency - this.running.size);
-    for (const item of dispatchable.slice(0, capacity)) {
+    for (const item of dispatchable) {
+      if (dispatched >= capacity) break;
+
+      if (todoBlockedByNonTerminal.has(item.id)) {
+        this.logger.info('runtime.dispatch.skipped.todo_blocked', {
+          issue_id: item.id,
+          issue_identifier: item.identifier,
+          blocked_by: item.blocked_by ?? [],
+        });
+        continue;
+      }
+
+      if (!this.hasStateCapacity(item.state)) {
+        this.logger.info('runtime.dispatch.skipped.state_capacity', {
+          issue_id: item.id,
+          issue_identifier: item.identifier,
+          state: item.state,
+          maxConcurrencyByState: maxConcurrencyByState[item.state],
+        });
+        continue;
+      }
+
       const ok = await this.dispatch(item);
       if (ok) {
         dispatched += 1;
@@ -463,7 +486,18 @@ export class PollingRuntime implements OrchestratorRuntime {
       return;
     }
 
-    await this.dispatch(eligible);
+    if (!(await this.isTodoBlockedByNonTerminal(eligible))) {
+      if (!this.hasStateCapacity(eligible.state)) {
+        this.claimed.delete(itemId);
+        this.scheduleRetry(eligible, 'continuation', 'retry_fire_state_capacity');
+        return;
+      }
+      await this.dispatch(eligible);
+      return;
+    }
+
+    this.claimed.delete(itemId);
+    this.scheduleRetry(eligible, 'continuation', 'retry_fire_blocked_by_non_terminal');
   }
 
   private async findEligibleItem(itemId: string): Promise<NormalizedWorkItem | undefined> {
@@ -583,6 +617,61 @@ export class PollingRuntime implements OrchestratorRuntime {
     return Math.max(0, Math.floor(configured));
   }
 
+  private resolveMaxConcurrencyByState(): Partial<Record<WorkItemState, number>> {
+    const raw = (this.workflow.extensions?.github_projects as Record<string, unknown> | undefined)
+      ?.max_concurrent_agents_by_state;
+    if (!raw || typeof raw !== 'object') return {};
+
+    const result: Partial<Record<WorkItemState, number>> = {};
+    for (const state of ['todo', 'in_progress', 'blocked', 'done'] as const) {
+      const value = (raw as Record<string, unknown>)[state];
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+      result[state] = Math.max(0, Math.floor(value));
+    }
+    return result;
+  }
+
+  private hasStateCapacity(state: WorkItemState): boolean {
+    const limit = this.resolveMaxConcurrencyByState()[state];
+    if (typeof limit !== 'number') return true;
+
+    let runningInState = 0;
+    for (const entry of this.running.values()) {
+      if (entry.item.state === state) {
+        runningInState += 1;
+      }
+    }
+
+    return runningInState < limit;
+  }
+
+  private async findTodoItemsBlockedByNonTerminal(items: NormalizedWorkItem[]): Promise<Set<string>> {
+    const withBlockers = items.filter((item) => item.state === 'todo' && (item.blocked_by?.length ?? 0) > 0);
+    if (withBlockers.length === 0) return new Set();
+
+    const blockerIds = [...new Set(withBlockers.flatMap((item) => item.blocked_by ?? []))];
+    const states = await this.tracker.getStatesByIds(blockerIds);
+
+    const blocked = new Set<string>();
+    for (const item of withBlockers) {
+      const hasNonTerminal = (item.blocked_by ?? []).some((id) => !isTerminalState(states[id]));
+      if (hasNonTerminal) {
+        blocked.add(item.id);
+      }
+    }
+
+    return blocked;
+  }
+
+  private async isTodoBlockedByNonTerminal(item: NormalizedWorkItem): Promise<boolean> {
+    if (item.state !== 'todo' || (item.blocked_by?.length ?? 0) === 0) {
+      return false;
+    }
+
+    const states = await this.tracker.getStatesByIds(item.blocked_by ?? []);
+    return (item.blocked_by ?? []).some((id) => !isTerminalState(states[id]));
+  }
+
   private shouldMarkDoneOnCompletion(): boolean {
     const value = (this.workflow.extensions?.github_projects as Record<string, unknown> | undefined)
       ?.mark_done_on_completion;
@@ -617,6 +706,10 @@ function defaultCommandExists(command: string): boolean {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function isTerminalState(state: WorkItemState | undefined): boolean {
+  return state === 'done' || state === 'blocked';
 }
 
 function sortCandidates(items: NormalizedWorkItem[]): NormalizedWorkItem[] {

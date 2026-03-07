@@ -353,6 +353,81 @@ describe('PollingRuntime state machine', () => {
     assert.ok(logger.infoLogs.some((log) => log.message === 'runtime.config.applied'));
   });
 
+  it('enforces max_concurrent_agents_by_state alongside global maxConcurrency', async () => {
+    const tracker = new FakeTracker();
+    tracker.items = [
+      { ...item('A', 101), state: 'todo' },
+      { ...item('B', 102), state: 'todo' },
+      { ...item('C', 103), state: 'in_progress' },
+    ];
+
+    const runtime = new PollingRuntime(
+      tracker,
+      {
+        ...workflow,
+        polling: { ...workflow.polling, maxConcurrency: 3 },
+        runtime: { ...workflow.runtime, maxConcurrency: 3 },
+        extensions: {
+          github_projects: {
+            max_concurrent_agents_by_state: {
+              todo: 1,
+              in_progress: 1,
+            },
+          },
+        },
+      },
+      new FakeLogger(),
+      baseRuntimeOptions,
+    );
+
+    await runtime.tick();
+
+    assert.deepEqual(tracker.markInProgressCalls, ['A', 'C']);
+  });
+
+  it('skips todo dispatch when blocked_by contains non-terminal items', async () => {
+    const tracker = new FakeTracker();
+    tracker.items = [
+      {
+        ...item('A', 101),
+        blocked_by: ['B'],
+      },
+      item('C', 103),
+    ];
+    tracker.states.B = 'in_progress';
+
+    const runtime = new PollingRuntime(
+      tracker,
+      {
+        ...workflow,
+        polling: { ...workflow.polling, maxConcurrency: 2 },
+      },
+      new FakeLogger(),
+      baseRuntimeOptions,
+    );
+
+    await runtime.tick();
+
+    assert.deepEqual(tracker.markInProgressCalls, ['C']);
+  });
+
+  it('allows todo dispatch when all blockers are terminal', async () => {
+    const tracker = new FakeTracker();
+    tracker.items = [
+      {
+        ...item('A', 101),
+        blocked_by: ['B'],
+      },
+    ];
+    tracker.states.B = 'done';
+
+    const runtime = new PollingRuntime(tracker, workflow, new FakeLogger(), baseRuntimeOptions);
+
+    await runtime.tick();
+
+    assert.deepEqual(tracker.markInProgressCalls, ['A']);
+  });
+
   it('aggregates usage/runtime metrics and exposes detailed snapshot state', async () => {
     let now = 5_000;
     const tracker = new FakeTracker();
