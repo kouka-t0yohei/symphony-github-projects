@@ -148,6 +148,23 @@ npm start
 node dist/cli.js
 ```
 
+### 4.1 Web UI (dashboard)
+
+The service now includes a lightweight web UI for monitoring runtime state.
+
+Start service with:
+
+```bash
+node dist/cli.js --workflow WORKFLOW.md --webui --webui-host 127.0.0.1 --webui-port 3000
+```
+
+Then open `http://127.0.0.1:3000` to view running items, retries, and token usage.
+Env vars are also supported:
+
+- `WEBUI_ENABLED=1`
+- `WEBUI_HOST`
+- `WEBUI_PORT`
+
 ## WORKFLOW.md Reference
 
 The `WORKFLOW.md` file is the single source of truth for orchestrator behavior. It is designed
