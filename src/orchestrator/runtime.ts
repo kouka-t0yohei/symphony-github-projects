@@ -64,14 +64,18 @@ export interface PollingRuntimeOptions {
   continuationRetryDelayMs?: number;
   failureRetryBaseDelayMs?: number;
   failureRetryMultiplier?: number;
+  /** @deprecated Use maxRetryBackoffMs */
   failureRetryMaxDelayMs?: number;
+  /** Maximum cap for failure retry delay in ms (spec: max_retry_backoff_ms). */
+  maxRetryBackoffMs?: number;
   env?: Record<string, string | undefined>;
   commandExists?: (command: string) => boolean;
 }
 
 const DEFAULT_STALL_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_CONTINUATION_RETRY_DELAY_MS = 1_000;
-const DEFAULT_FAILURE_RETRY_BASE_DELAY_MS = 1_000;
+/** Failure retry base delay per spec: min(10000 * 2^(attempt-1), max_retry_backoff_ms) */
+const DEFAULT_FAILURE_RETRY_BASE_DELAY_MS = 10_000;
 const DEFAULT_FAILURE_RETRY_MULTIPLIER = 2;
 const DEFAULT_FAILURE_RETRY_MAX_DELAY_MS = 60_000;
 
@@ -107,7 +111,8 @@ export class PollingRuntime implements OrchestratorRuntime {
     this.failureRetryBaseDelayMs =
       options.failureRetryBaseDelayMs ?? DEFAULT_FAILURE_RETRY_BASE_DELAY_MS;
     this.failureRetryMultiplier = options.failureRetryMultiplier ?? DEFAULT_FAILURE_RETRY_MULTIPLIER;
-    this.failureRetryMaxDelayMs = options.failureRetryMaxDelayMs ?? DEFAULT_FAILURE_RETRY_MAX_DELAY_MS;
+    this.failureRetryMaxDelayMs =
+      options.maxRetryBackoffMs ?? options.failureRetryMaxDelayMs ?? DEFAULT_FAILURE_RETRY_MAX_DELAY_MS;
     this.env = options.env ?? process.env;
     this.commandExists = options.commandExists ?? defaultCommandExists;
   }
@@ -483,14 +488,24 @@ export class PollingRuntime implements OrchestratorRuntime {
     const capacity = Math.max(0, maxConcurrency - this.running.size);
     if (capacity <= 0) {
       this.claimed.delete(itemId);
-      this.scheduleRetry(eligible, 'continuation', 'retry_fire_no_slot');
+      this.scheduleRetry(
+        eligible,
+        'continuation',
+        'retry_fire_no_slot',
+        `no dispatch slot available (running=${this.running.size}, max=${maxConcurrency})`,
+      );
       return;
     }
 
     if (!(await this.isTodoBlockedByNonTerminal(eligible))) {
       if (!this.hasStateCapacity(eligible.state)) {
         this.claimed.delete(itemId);
-        this.scheduleRetry(eligible, 'continuation', 'retry_fire_state_capacity');
+        this.scheduleRetry(
+          eligible,
+          'continuation',
+          'retry_fire_state_capacity',
+          `per-state concurrency limit reached for state=${eligible.state}`,
+        );
         return;
       }
       await this.dispatch(eligible);
@@ -498,7 +513,12 @@ export class PollingRuntime implements OrchestratorRuntime {
     }
 
     this.claimed.delete(itemId);
-    this.scheduleRetry(eligible, 'continuation', 'retry_fire_blocked_by_non_terminal');
+    this.scheduleRetry(
+      eligible,
+      'continuation',
+      'retry_fire_blocked_by_non_terminal',
+      `item is blocked by a non-terminal dependency`,
+    );
   }
 
   private async findEligibleItem(itemId: string): Promise<NormalizedWorkItem | undefined> {
@@ -557,6 +577,8 @@ export class PollingRuntime implements OrchestratorRuntime {
     }
 
     const attempt = (current?.attempt ?? 0) + 1;
+    // Failure retry formula: min(base * multiplier^(attempt-1), max_retry_backoff_ms)
+    // Default base=10000, multiplier=2 → 10s, 20s, 40s, … capped at max_retry_backoff_ms.
     const delay =
       kind === 'continuation'
         ? this.continuationRetryDelayMs
@@ -566,15 +588,19 @@ export class PollingRuntime implements OrchestratorRuntime {
           );
 
     const dueAt = this.now() + delay;
+    const timer = setTimeout(() => {
+      void this.onRetryFire(item.id);
+    }, delay);
+    // Unref so pending retry timers do not prevent process exit (e.g. in tests).
+    timer.unref();
+
     const next: RetryEntry = {
       issueId: item.id,
       identifier: item.identifier ?? `#${item.number ?? item.id}`,
       item,
       attempt,
       dueAt,
-      timer: setTimeout(() => {
-        void this.onRetryFire(item.id);
-      }, delay),
+      timer,
       error,
       kind,
     };

@@ -149,6 +149,82 @@ describe('PollingRuntime state machine', () => {
     assert.deepEqual(runtime.snapshot().running, ['A']);
   });
 
+  it('failure retry formula: min(base * 2^(attempt-1), max_retry_backoff_ms)', async () => {
+    // Spec: min(10000 * 2^(attempt-1), max_retry_backoff_ms)
+    // attempts: 1→10000, 2→20000, 3→40000, capped at maxRetryBackoffMs
+    let now = 0;
+    const tracker = new FakeTracker();
+    tracker.items = [item('A', 101)];
+    tracker.failMarkInProgressFor.add('A');
+
+    const runtime = new PollingRuntime(tracker, workflow, new FakeLogger(), {
+      ...baseRuntimeOptions,
+      now: () => now,
+      continuationRetryDelayMs: 500,
+      failureRetryBaseDelayMs: 10_000,
+      failureRetryMultiplier: 2,
+      maxRetryBackoffMs: 30_000,
+    });
+
+    // attempt 1 → delay = min(10000 * 2^0, 30000) = 10000
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 1);
+
+    now += 9_999;
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 1); // not due yet
+
+    now += 1;
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 2); // attempt 2 → delay = min(20000, 30000) = 20000
+
+    now += 20_000;
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 3); // attempt 3 → delay = min(40000, 30000) = 30000
+
+    now += 29_999;
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 3); // cap not reached
+
+    now += 1;
+    tracker.failMarkInProgressFor.delete('A');
+    await runtime.tick();
+    assert.deepEqual(runtime.snapshot().running, ['A']); // dispatched after cap delay
+  });
+
+  it('maxRetryBackoffMs option is honored as alias for failureRetryMaxDelayMs', async () => {
+    let now = 0;
+    const tracker = new FakeTracker();
+    tracker.items = [item('A', 101)];
+    tracker.failMarkInProgressFor.add('A');
+
+    const runtime = new PollingRuntime(tracker, workflow, new FakeLogger(), {
+      ...baseRuntimeOptions,
+      now: () => now,
+      continuationRetryDelayMs: 500,
+      failureRetryBaseDelayMs: 100,
+      failureRetryMultiplier: 2,
+      maxRetryBackoffMs: 150, // cap at 150ms
+    });
+
+    // attempt 1 → delay = min(100, 150) = 100
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 1);
+
+    now += 100;
+    await runtime.tick();
+    // attempt 2 → delay = min(200, 150) = 150  (cap applied)
+    assert.equal(runtime.snapshot().retryAttempts.A, 2);
+
+    now += 149;
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 2); // cap in effect
+
+    now += 1;
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 3);
+  });
+
   it('uses continuation retry after normal worker exit when item is not done', async () => {
     let now = 2_000;
     const tracker = new FakeTracker();
