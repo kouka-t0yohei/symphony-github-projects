@@ -1,6 +1,8 @@
 import { JsonConsoleLogger, type Logger } from './logging/logger.js';
 import { PollingRuntime, type OrchestratorRuntime } from './orchestrator/runtime.js';
-import { GitHubProjectsAdapterPlaceholder, type TrackerAdapter } from './tracker/adapter.js';
+import { GitHubProjectsAdapter, type TrackerAdapter } from './tracker/adapter.js';
+import { GraphQLClient } from './tracker/graphql-client.js';
+import { GitHubProjectsGraphQLClient } from './tracker/github-projects-client.js';
 import {
   FileWorkflowLoader,
   type LoadedWorkflowContract,
@@ -19,15 +21,22 @@ export interface BootstrapResult {
   logger: Logger;
 }
 
+export class BootstrapConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BootstrapConfigurationError';
+  }
+}
+
 export async function bootstrapFromWorkflow(
   workflowPath: string,
   deps: BootstrapDependencies = {},
 ): Promise<BootstrapResult> {
   const workflowLoader = deps.workflowLoader ?? new FileWorkflowLoader();
-  const tracker = deps.trackerAdapter ?? new GitHubProjectsAdapterPlaceholder();
   const logger = deps.logger ?? new JsonConsoleLogger();
 
   const workflow = await workflowLoader.load(workflowPath);
+  const tracker = deps.trackerAdapter ?? createTrackerFromWorkflow(workflow);
   const runtime = new PollingRuntime(tracker, workflow, logger);
 
   logger.info('bootstrap.ready', {
@@ -42,4 +51,24 @@ export async function bootstrapFromWorkflow(
     runtime,
     logger,
   };
+}
+
+function createTrackerFromWorkflow(workflow: LoadedWorkflowContract): TrackerAdapter {
+  const { owner, projectNumber, tokenEnv } = workflow.tracker.github;
+  const token = process.env[tokenEnv]?.trim();
+
+  if (!token) {
+    throw new BootstrapConfigurationError(
+      `Missing tracker auth token environment variable: ${tokenEnv}`,
+    );
+  }
+
+  const graphQLClient = new GraphQLClient({ token });
+  const projectsClient = new GitHubProjectsGraphQLClient(graphQLClient);
+
+  return new GitHubProjectsAdapter({
+    owner,
+    projectNumber,
+    client: projectsClient,
+  });
 }
