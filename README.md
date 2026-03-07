@@ -2,13 +2,39 @@
 
 A TypeScript implementation of [Symphony](https://github.com/openai/symphony) targeting
 **GitHub Projects** as the issue tracker, based on the
-[Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md).
+[Symphony SPEC](./SPEC.md).
 
 Symphony turns project work into isolated, autonomous implementation runs — allowing teams to
 manage work instead of supervising coding agents. The upstream reference implementation uses Linear
 as its tracker; this project adapts the same architecture for GitHub Projects.
 
 > **Status:** Engineering preview. Suitable for evaluation in trusted environments.
+
+## Choose your execution option
+
+### Option 1. Make your own
+
+Tell your favorite coding agent to implement a Symphony runtime in your language from the following spec:
+
+- [Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md)
+- This repo’s GitHub Projects adaptation: [`SPEC.md`](./SPEC.md)
+
+This is the recommended path if you want full control, custom architecture, or a different runtime stack.
+
+### Option 2. Use our experimental reference implementation
+
+Use this repository as a working reference implementation:
+
+```bash
+git clone https://github.com/t0yohei/symphony-github-projects.git
+cd symphony-github-projects
+npm install
+npm run build
+npm start
+```
+
+You can also start quickly via GitHub Actions workflows (for CI validation / periodic smoke checks) in
+`.github/workflows/ci.yml`.
 
 ## How It Works
 
@@ -48,7 +74,7 @@ npm install
 
 ### 2. Set environment variables
 
-Following the [Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md), configuration
+Following this repo's [SPEC](./SPEC.md), configuration
 values are resolved from runtime environment variables — not from `.env` files. Set them in your
 shell before starting the service:
 
