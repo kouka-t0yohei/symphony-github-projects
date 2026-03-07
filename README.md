@@ -115,7 +115,9 @@ sent to the coding agent for each work item. Template variables use
 
 ```bash
 npm run build
-node dist/index.js
+npm start
+# or
+node dist/cli.js
 ```
 
 ## WORKFLOW.md Reference

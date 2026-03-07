@@ -5,13 +5,17 @@
   "description": "TypeScript scaffold for Symphony-style orchestrator targeting GitHub Projects",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "symphony-github-projects": "dist/cli.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "npm run build && node --test dist/**/*.test.js"
+    "test": "npm run build && node --test dist/**/*.test.js",
+    "start": "node dist/cli.js"
   },
   "engines": {
     "node": ">=20"
