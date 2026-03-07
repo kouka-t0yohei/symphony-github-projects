@@ -1,37 +1,70 @@
-import { GraphQLClient, GraphQLError } from "./graphql-client.js";
+import { GraphQLClient, GraphQLError } from './graphql-client.js';
 
 export class TrackerTransportError extends Error {
   constructor(message: string, public readonly causeError?: unknown) {
     super(message);
-    this.name = "TrackerTransportError";
+    this.name = 'TrackerTransportError';
   }
 }
 
 export class TrackerStatusError extends Error {
   constructor(public readonly status: number, message?: string) {
     super(message ?? `Tracker request failed with status ${status}`);
-    this.name = "TrackerStatusError";
+    this.name = 'TrackerStatusError';
   }
 }
 
 export class TrackerGraphQLError extends Error {
   constructor(message: string, public readonly errors: Array<{ message: string }>) {
     super(message);
-    this.name = "TrackerGraphQLError";
+    this.name = 'TrackerGraphQLError';
   }
 }
 
 export class TrackerMalformedPayloadError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "TrackerMalformedPayloadError";
+    this.name = 'TrackerMalformedPayloadError';
   }
 }
+
+interface ProjectV2FieldNode {
+  name?: string | null;
+}
+
+interface FieldTextValueNode {
+  __typename: 'ProjectV2ItemFieldTextValue';
+  text?: string | null;
+  field?: ProjectV2FieldNode | null;
+}
+
+interface FieldSingleSelectValueNode {
+  __typename: 'ProjectV2ItemFieldSingleSelectValue';
+  name?: string | null;
+  field?: ProjectV2FieldNode | null;
+}
+
+interface FieldNumberValueNode {
+  __typename: 'ProjectV2ItemFieldNumberValue';
+  number?: number | null;
+  field?: ProjectV2FieldNode | null;
+}
+
+interface UnknownFieldValueNode {
+  __typename: string;
+  field?: ProjectV2FieldNode | null;
+}
+
+type ProjectV2ItemFieldValueNode =
+  | FieldTextValueNode
+  | FieldSingleSelectValueNode
+  | FieldNumberValueNode
+  | UnknownFieldValueNode;
 
 export interface ProjectItemNode {
   id: string;
   content: {
-    __typename: "Issue" | "PullRequest";
+    __typename: 'Issue' | 'PullRequest';
     number: number;
     title: string;
     body?: string;
@@ -41,11 +74,7 @@ export interface ProjectItemNode {
     updatedAt?: string;
   } | null;
   fieldValues?: {
-    nodes?: Array<
-      | { __typename: "ProjectV2ItemFieldSingleSelectValue"; name?: string | null }
-      | { __typename: string }
-      | null
-    > | null;
+    nodes?: Array<ProjectV2ItemFieldValueNode | null> | null;
   };
 }
 
@@ -122,6 +151,15 @@ export class GitHubProjectsGraphQLClient implements GitHubProjectsClient {
                     __typename
                     ... on ProjectV2ItemFieldSingleSelectValue {
                       name
+                      field { name }
+                    }
+                    ... on ProjectV2ItemFieldTextValue {
+                      text
+                      field { name }
+                    }
+                    ... on ProjectV2ItemFieldNumberValue {
+                      number
+                      field { name }
                     }
                   }
                 }
@@ -152,6 +190,15 @@ export class GitHubProjectsGraphQLClient implements GitHubProjectsClient {
                     __typename
                     ... on ProjectV2ItemFieldSingleSelectValue {
                       name
+                      field { name }
+                    }
+                    ... on ProjectV2ItemFieldTextValue {
+                      text
+                      field { name }
+                    }
+                    ... on ProjectV2ItemFieldNumberValue {
+                      number
+                      field { name }
                     }
                   }
                 }
@@ -171,7 +218,7 @@ export class GitHubProjectsGraphQLClient implements GitHubProjectsClient {
 
     const connection = data.user?.projectV2?.items ?? data.organization?.projectV2?.items;
     if (!connection) {
-      throw new TrackerMalformedPayloadError("Project items connection missing in GraphQL response");
+      throw new TrackerMalformedPayloadError('Project items connection missing in GraphQL response');
     }
 
     return {
@@ -206,6 +253,15 @@ export class GitHubProjectsGraphQLClient implements GitHubProjectsClient {
                 __typename
                 ... on ProjectV2ItemFieldSingleSelectValue {
                   name
+                  field { name }
+                }
+                ... on ProjectV2ItemFieldTextValue {
+                  text
+                  field { name }
+                }
+                ... on ProjectV2ItemFieldNumberValue {
+                  number
+                  field { name }
                 }
               }
             }
@@ -224,7 +280,7 @@ export class GitHubProjectsGraphQLClient implements GitHubProjectsClient {
     } catch (error) {
       if (error instanceof GraphQLError) {
         const m = error.message.toLowerCase();
-        if (m.includes("failed:") || m.includes("status")) {
+        if (m.includes('failed:') || m.includes('status')) {
           const status = Number(error.message.match(/(\d{3})/)?.[1] ?? 0);
           throw new TrackerStatusError(status || 500, error.message);
         }
@@ -233,7 +289,7 @@ export class GitHubProjectsGraphQLClient implements GitHubProjectsClient {
         }
         throw new TrackerMalformedPayloadError(error.message);
       }
-      throw new TrackerTransportError("Failed to communicate with tracker backend", error);
+      throw new TrackerTransportError('Failed to communicate with tracker backend', error);
     }
   }
 }

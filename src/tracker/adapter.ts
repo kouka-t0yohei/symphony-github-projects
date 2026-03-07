@@ -1,10 +1,10 @@
-import type { NormalizedWorkItem, WorkItemState } from "../model/work-item.js";
-import { normalizeState } from "../model/work-item.js";
+import type { NormalizedWorkItem, WorkItemState } from '../model/work-item.js';
+import { normalizeState } from '../model/work-item.js';
 import {
   type GitHubProjectsClient,
   type ProjectItemNode,
   TrackerMalformedPayloadError,
-} from "./github-projects-client.js";
+} from './github-projects-client.js';
 
 export interface TrackerAdapter {
   listEligibleItems(): Promise<NormalizedWorkItem[]>;
@@ -27,7 +27,18 @@ export interface GitHubProjectsAdapterOptions {
   writer?: TrackerWriter;
   pageSize?: number;
   activeStates?: WorkItemState[];
+  blockerFieldNames?: string[];
 }
+
+const DEFAULT_BLOCKER_FIELD_NAMES = [
+  'blocked_by',
+  'blocked by',
+  'depends_on',
+  'depends on',
+  'dependencies',
+  'blocked',
+  'depends',
+];
 
 export class GitHubProjectsAdapter implements TrackerAdapter {
   private readonly owner: string;
@@ -36,6 +47,7 @@ export class GitHubProjectsAdapter implements TrackerAdapter {
   private readonly writer?: TrackerWriter;
   private readonly defaultPageSize: number;
   private readonly defaultActiveStates: WorkItemState[];
+  private readonly blockerFieldNames: string[];
 
   constructor(options: GitHubProjectsAdapterOptions) {
     this.owner = options.owner;
@@ -47,6 +59,10 @@ export class GitHubProjectsAdapter implements TrackerAdapter {
       options.activeStates && options.activeStates.length > 0
         ? [...options.activeStates]
         : ['todo', 'in_progress', 'blocked'];
+    this.blockerFieldNames =
+      options.blockerFieldNames && options.blockerFieldNames.length > 0
+        ? options.blockerFieldNames.map((value) => value.toLowerCase())
+        : DEFAULT_BLOCKER_FIELD_NAMES;
   }
 
   async listEligibleItems(): Promise<NormalizedWorkItem[]> {
@@ -67,8 +83,8 @@ export class GitHubProjectsAdapter implements TrackerAdapter {
   ): Promise<NormalizedWorkItem[]> {
     const pageSize = options?.pageSize ?? this.defaultPageSize;
     const target = new Set(states.map((state) => normalizeState(String(state))));
-    const acc: NormalizedWorkItem[] = [];
 
+    const allNodes: ProjectItemNode[] = [];
     let after: string | undefined;
     while (true) {
       const page = await this.client.fetchProjectItemsPage({
@@ -78,18 +94,27 @@ export class GitHubProjectsAdapter implements TrackerAdapter {
         after,
       });
 
-      for (const node of page.items) {
-        const normalized = this.normalizeNode(node);
-        if (target.has(normalized.state)) {
-          acc.push(normalized);
-        }
-      }
+      allNodes.push(...page.items);
 
-      if (!page.hasNextPage || !page.endCursor) break;
+      if (!page.hasNextPage || !page.endCursor) {
+        break;
+      }
       after = page.endCursor;
     }
 
-    return acc;
+    const numberToId = new Map<number, string>();
+    for (const node of allNodes) {
+      if (!node.content || node.content.__typename !== 'Issue') {
+        continue;
+      }
+      numberToId.set(node.content.number, node.id);
+    }
+
+    const normalized = allNodes
+      .map((node) => this.normalizeNode(node, numberToId))
+      .filter((node) => target.has(node.state));
+
+    return normalized;
   }
 
   async getStatesByIds(itemIds: string[]): Promise<Record<string, WorkItemState>> {
@@ -116,22 +141,27 @@ export class GitHubProjectsAdapter implements TrackerAdapter {
     await this.writer.markDone(itemId);
   }
 
-  private normalizeNode(node: ProjectItemNode): NormalizedWorkItem {
-    if (!node.content || node.content.__typename !== "Issue") {
-      throw new TrackerMalformedPayloadError("Project item does not contain Issue content");
+  private normalizeNode(
+    node: ProjectItemNode,
+    numberToId: Map<number, string>,
+  ): NormalizedWorkItem {
+    if (!node.content || node.content.__typename !== 'Issue') {
+      throw new TrackerMalformedPayloadError('Project item does not contain Issue content');
     }
 
     const createdAt = node.content.createdAt;
     const updatedAt = node.content.updatedAt;
     if (!createdAt || !updatedAt) {
-      throw new TrackerMalformedPayloadError("Project item payload missing timestamps");
+      throw new TrackerMalformedPayloadError('Project item payload missing timestamps');
     }
 
     const labels = (node.content.labels?.nodes ?? [])
       .map((label) => label?.name?.trim().toLowerCase())
       .filter((label): label is string => Boolean(label));
 
-    const body = node.content.body ?? "";
+    const body = node.content.body ?? '';
+    const blockerNumbers = this.extractBlockerIssueNumbers(node, body);
+    const blockedBy = this.extractBlockedBy(blockerNumbers, numberToId);
 
     return {
       id: node.id,
@@ -143,24 +173,84 @@ export class GitHubProjectsAdapter implements TrackerAdapter {
       state: this.extractState(node),
       priority: null,
       labels,
-      blocked_by: [],
+      blocked_by: blockedBy,
       assignees: [],
       created_at: createdAt,
       updated_at: updatedAt,
-      updatedAt: updatedAt,
+      updatedAt,
       url: node.content.url,
     };
   }
 
+  private extractBlockerIssueNumbers(node: ProjectItemNode, body: string): number[] {
+    const projectFieldNumbers = this.extractIssueNumbersFromProjectFields(node);
+    if (projectFieldNumbers.length > 0) {
+      return projectFieldNumbers;
+    }
+
+    return parseIssueNumbersFromText(body);
+  }
+
+  private extractIssueNumbersFromProjectFields(node: ProjectItemNode): number[] {
+    const values = node.fieldValues?.nodes ?? [];
+    const blockerNumbers = new Set<number>();
+
+    for (const value of values) {
+      if (!value || value.__typename !== 'ProjectV2ItemFieldTextValue') {
+        continue;
+      }
+
+      const fieldName = value.field?.name?.toLowerCase() ?? '';
+      if (!this.blockerFieldNames.includes(fieldName)) {
+        continue;
+      }
+
+      const fieldText = (value as { text?: string | null }).text ?? '';
+      for (const num of parseIssueNumbersFromText(fieldText)) {
+        blockerNumbers.add(num);
+      }
+    }
+
+    return [...blockerNumbers];
+  }
+
+  private extractBlockedBy(
+    references: number[],
+    numberToId: Map<number, string>,
+  ): string[] {
+    const blockedBy = new Set<string>();
+    for (const number of references) {
+      const id = numberToId.get(number);
+      if (id) {
+        blockedBy.add(id);
+      }
+    }
+
+    return [...blockedBy];
+  }
+
   private extractState(node: ProjectItemNode): WorkItemState {
     const singleSelect =
-      node.fieldValues?.nodes?.find((n) => n?.__typename === "ProjectV2ItemFieldSingleSelectValue") ?? null;
+      node.fieldValues?.nodes?.find((n) => n?.__typename === 'ProjectV2ItemFieldSingleSelectValue') ?? null;
 
-    if (singleSelect && "name" in singleSelect && typeof singleSelect.name === "string") {
+    if (singleSelect && 'name' in singleSelect && typeof singleSelect.name === 'string') {
       return normalizeState(singleSelect.name);
     }
-    return "todo";
+    return 'todo';
   }
+}
+
+function parseIssueNumbersFromText(text: string): number[] {
+  const seen = new Set<number>();
+  const matches = text.match(/#(\d+)/g) ?? [];
+  for (const match of matches) {
+    const value = Number.parseInt(match.slice(1), 10);
+    if (Number.isInteger(value) && value > 0) {
+      seen.add(value);
+    }
+  }
+
+  return [...seen];
 }
 
 export class GitHubProjectsAdapterPlaceholder implements TrackerAdapter {
@@ -181,10 +271,10 @@ export class GitHubProjectsAdapterPlaceholder implements TrackerAdapter {
   }
 
   async markInProgress(_itemId: string): Promise<void> {
-    throw new Error("GitHub Projects write path not implemented yet");
+    throw new Error('GitHub Projects write path not implemented yet');
   }
 
   async markDone(_itemId: string): Promise<void> {
-    throw new Error("GitHub Projects write path not implemented yet");
+    throw new Error('GitHub Projects write path not implemented yet');
   }
 }
