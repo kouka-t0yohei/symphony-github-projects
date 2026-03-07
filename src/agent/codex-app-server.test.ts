@@ -253,7 +253,7 @@ test('continues multi-turn on same thread and uses continuation guidance', async
   assert.equal(secondTurnEventSent, true);
 });
 
-test('derives session id from thread id when session_id is absent', async () => {
+test('derives session id from thread and turn ids when session_id is absent', async () => {
   const fake = new FakeChildProcess();
   const client = new CodexAppServerClient({
     cwd: '/tmp/workspace',
@@ -276,8 +276,9 @@ test('derives session id from thread id when session_id is absent', async () => 
 
   const result = await client.run({ renderedPrompt: 'hello' });
   assert.equal(result.status, 'completed');
-  assert.equal(result.state.sessionId, 'thread:t-derived');
+  assert.equal(result.state.sessionId, 'thread:t-derived:turn-1');
   assert.equal(result.state.threadId, 't-derived');
+  assert.equal(result.state.turnId, 'turn-1');
 });
 
 test('detects stall and terminates the subprocess', async () => {
