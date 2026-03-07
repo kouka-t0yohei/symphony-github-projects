@@ -412,7 +412,9 @@ export class CodexAppServerClient {
     this.state.turnId = readString(event, ['params.turn_id', 'turn_id']) ?? this.state.turnId;
 
     if (!this.state.sessionId && this.state.threadId) {
-      this.state.sessionId = `thread:${this.state.threadId}`;
+      this.state.sessionId = this.state.turnId
+        ? `thread:${this.state.threadId}:${this.state.turnId}`
+        : `thread:${this.state.threadId}`;
     }
 
     const inputTokens = readNumber(event, [
