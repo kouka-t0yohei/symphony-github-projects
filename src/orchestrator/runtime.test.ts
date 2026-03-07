@@ -122,6 +122,20 @@ describe('PollingRuntime state machine', () => {
     assert.deepEqual(runtime.snapshot().running, ['A']);
   });
 
+  it('releases claimed slot after transition to running', async () => {
+    const tracker = new FakeTracker();
+    tracker.items = [item('A', 101)];
+    tracker.states.A = 'in_progress';
+
+    const runtime = new PollingRuntime(tracker, workflow, new FakeLogger(), baseRuntimeOptions);
+
+    await runtime.tick();
+
+    const snapshot = runtime.snapshot();
+    assert.deepEqual(snapshot.running, ['A']);
+    assert.deepEqual(snapshot.claimed, []);
+  });
+
   it('schedules failure retry with exponential backoff and cap', async () => {
     let now = 1_000;
     const tracker = new FakeTracker();

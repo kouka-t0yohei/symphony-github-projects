@@ -289,7 +289,7 @@ export class PollingRuntime implements OrchestratorRuntime {
     const maxConcurrencyByState = this.resolveMaxConcurrencyByState();
 
     let dispatched = 0;
-    const capacity = Math.max(0, maxConcurrency - this.running.size);
+    const capacity = Math.max(0, maxConcurrency - this.resolveOccupiedSlots());
     for (const item of dispatchable) {
       if (dispatched >= capacity) break;
 
@@ -701,14 +701,14 @@ export class PollingRuntime implements OrchestratorRuntime {
     }
 
     const maxConcurrency = this.resolveMaxConcurrency();
-    const capacity = Math.max(0, maxConcurrency - this.running.size);
+    const capacity = Math.max(0, maxConcurrency - this.resolveOccupiedSlots());
     if (capacity <= 0) {
       this.claimed.delete(itemId);
       this.scheduleRetry(
         eligible,
         'continuation',
         'retry_fire_no_slot',
-        `no dispatch slot available (running=${this.running.size}, max=${maxConcurrency})`,
+        `no dispatch slot available (occupied=${this.resolveOccupiedSlots()}, max=${maxConcurrency})`,
       );
       return;
     }
@@ -747,6 +747,11 @@ export class PollingRuntime implements OrchestratorRuntime {
       return false;
     }
 
+    const maxConcurrency = this.resolveMaxConcurrency();
+    if (this.resolveOccupiedSlots() >= maxConcurrency) {
+      return false;
+    }
+
     this.claimed.add(item.id);
     this.logger.info('runtime.transition.claimed', {
       issue_id: item.id,
@@ -776,6 +781,7 @@ export class PollingRuntime implements OrchestratorRuntime {
         workspacePath: workspace.path,
         worker,
       });
+      this.claimed.delete(item.id);
       this.clearRetry(item.id);
 
       this.logger.info('runtime.transition.running', {
@@ -1019,6 +1025,12 @@ export class PollingRuntime implements OrchestratorRuntime {
       return DEFAULT_RUNTIME_MAX_CONCURRENCY;
     }
     return Math.max(0, Math.floor(configured));
+  }
+
+  private resolveOccupiedSlots(): number {
+    // claimed items are in-flight claims and must consume capacity until they
+    // either transition to running or fail and release the claim.
+    return this.running.size + this.claimed.size;
   }
 
   private resolveMaxConcurrencyByState(): Partial<Record<WorkItemState, number>> {
