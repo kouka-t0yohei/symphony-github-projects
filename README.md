@@ -2,7 +2,7 @@
 
 A TypeScript implementation of [Symphony](https://github.com/openai/symphony) targeting
 **GitHub Projects** as the issue tracker, based on the
-[Symphony SPEC](./SPEC.md).
+[Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md).
 
 Symphony turns project work into isolated, autonomous implementation runs — allowing teams to
 manage work instead of supervising coding agents. The upstream reference implementation uses Linear
@@ -10,14 +10,14 @@ as its tracker; this project adapts the same architecture for GitHub Projects.
 
 > **Status:** Engineering preview. Suitable for evaluation in trusted environments.
 
-## Running Symphony
+## Running Symphony for GitHub Projects
 
 ### Option 1. Make your own
 
-Tell your favorite coding agent to build Symphony in a programming language of your choice:
+Tell your favorite coding agent to build Symphony for GitHub Projects in a programming language of your choice:
 
-> Implement Symphony according to the following spec:
-> https://github.com/openai/symphony/blob/main/SPEC.md
+> Implement Symphony for GitHub Projects according to the following spec:
+> https://github.com/t0yohei/symphony-github-projects/blob/main/SPEC.md
 
 ### Option 2. Use our experimental reference implementation
 
@@ -33,14 +33,10 @@ npm start
 
 You can also ask a coding agent to help with setup:
 
-> Set up Symphony for my repository based on
-> https://github.com/openai/symphony/blob/main/SPEC.md
+> Set up Symphony for GitHub Projects for my repository based on
+> https://github.com/t0yohei/symphony-github-projects/blob/main/SPEC.md
 
 You can use the included GitHub Actions workflow as a smoke-check baseline (`.github/workflows/ci.yml`).
-
-Also keep this repo-spec handy:
-
-- https://github.com/t0yohei/symphony-github-projects/blob/main/SPEC.md
 
 ## How It Works
 
