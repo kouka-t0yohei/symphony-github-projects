@@ -2,13 +2,20 @@
 import { JsonConsoleLogger } from './logging/logger.js';
 import { bootstrapFromWorkflow, type BootstrapResult } from './bootstrap.js';
 import { PollingRuntime } from './orchestrator/runtime.js';
-import { FileWorkflowLoader, type LoadedWorkflowContract } from './workflow/contract.js';
+import { FileWorkflowLoader, type LoadedWorkflowContract, type WorkflowLoader } from './workflow/contract.js';
 import { WorkflowHotReloader } from './workflow/hot-reload.js';
-import type { WorkflowLoader } from './workflow/contract.js';
+import { startWebUIServer, type WebUIServerHandle, type WebUIServerOptions } from './webui/webui.js';
 import type { Logger } from './logging/logger.js';
+
+interface WebUIConfig {
+  enabled: boolean;
+  host: string;
+  port: number;
+}
 
 interface ServiceConfig {
   workflowPath: string;
+  webUI: WebUIConfig;
 }
 
 interface ReloaderLike {
@@ -31,6 +38,7 @@ interface ServiceDependencies {
     logger: Logger;
     onReload: (contract: LoadedWorkflowContract) => void;
   }) => ReloaderLike;
+  webUIServerFactory?: (options: Omit<WebUIServerOptions, 'logger'> & { logger: Logger }) => Promise<WebUIServerHandle>;
   logger?: Logger;
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
@@ -42,9 +50,14 @@ export interface ServiceHandle {
 }
 
 const DEFAULT_WORKFLOW_PATH = 'WORKFLOW.md';
+const DEFAULT_WEBUI_HOST = '127.0.0.1';
+const DEFAULT_WEBUI_PORT = 3000;
 
 export function parseArgs(argv: string[]): ServiceConfig {
   let workflowPath = process.env.WORKFLOW_PATH ?? DEFAULT_WORKFLOW_PATH;
+  let webUIEnabled = process.env.WEBUI_ENABLED === '1';
+  let webUIHost = process.env.WEBUI_HOST ?? DEFAULT_WEBUI_HOST;
+  let webUIPort = parsePort(process.env.WEBUI_PORT, DEFAULT_WEBUI_PORT);
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -57,16 +70,49 @@ export function parseArgs(argv: string[]): ServiceConfig {
     if ((arg === '--workflow' || arg === '-w') && i + 1 < argv.length) {
       workflowPath = argv[i + 1];
       i += 1;
+      continue;
+    }
+
+    if (arg === '--webui') {
+      webUIEnabled = true;
+      continue;
+    }
+
+    if (arg === '--webui-host' && i + 1 < argv.length) {
+      webUIHost = argv[i + 1];
+      i += 1;
+      continue;
+    }
+
+    if (arg === '--webui-port' && i + 1 < argv.length) {
+      webUIPort = parsePort(argv[i + 1], DEFAULT_WEBUI_PORT);
+      i += 1;
+      continue;
     }
   }
 
-  return { workflowPath };
+  return {
+    workflowPath,
+    webUI: {
+      enabled: webUIEnabled,
+      host: webUIHost,
+      port: webUIPort,
+    },
+  };
+}
+
+function parsePort(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+    return fallback;
+  }
+  return parsed;
 }
 
 function printUsage(): void {
   // eslint-disable-next-line no-console
   console.log(
-    `Usage: node dist/cli.js [--workflow path | -w path]\n` +
+    `Usage: node dist/cli.js [--workflow path | -w path] [--webui --webui-host host --webui-port 3000]\n` +
       'Starts Symphony-GitHub-Projects runtime loop using the specified WORKFLOW.md.',
   );
 }
@@ -94,6 +140,7 @@ export async function startService(config: ServiceConfig, deps: ServiceDependenc
   let timer: ReturnType<typeof setTimeout> | null = null;
   let inFlightTick = false;
   let stopping = false;
+  let webUIServer: WebUIServerHandle | null = null;
 
   const tick = async (): Promise<void> => {
     if (stopping) return;
@@ -156,6 +203,23 @@ export async function startService(config: ServiceConfig, deps: ServiceDependenc
     onReload: applyWorkflow,
   });
 
+  const startWebUI = async (): Promise<void> => {
+    if (!config.webUI.enabled) {
+      return;
+    }
+
+    const factory = deps.webUIServerFactory ?? startWebUIServer;
+    webUIServer = await factory({
+      logger,
+      workflowPath,
+      host: config.webUI.host,
+      port: config.webUI.port,
+      pollIntervalMs: bootstrapResult.workflow.polling.intervalMs,
+      maxConcurrency: bootstrapResult.workflow.runtime.maxConcurrency ?? bootstrapResult.workflow.polling.maxConcurrency ?? 1,
+      getRuntimeSnapshot: () => runtime.snapshot(),
+    });
+  };
+
   const stop = (): void => {
     if (stopping) return;
     stopping = true;
@@ -163,6 +227,10 @@ export async function startService(config: ServiceConfig, deps: ServiceDependenc
     if (timer !== null) {
       clearTimeoutFn(timer);
       timer = null;
+    }
+    if (webUIServer !== null) {
+      void webUIServer.stop();
+      webUIServer = null;
     }
     reloader.stop();
     logger.info('service.shutdown_requested');
@@ -178,11 +246,13 @@ export async function startService(config: ServiceConfig, deps: ServiceDependenc
   }
 
   reloader.start(bootstrapResult.workflow);
+  await startWebUI();
   logger.info('service.started', {
     workflowPath,
     pollIntervalMs: currentPollIntervalMs,
     maxConcurrency: bootstrapResult.workflow.polling.maxConcurrency,
     runtimeKind: bootstrapResult.workflow.tracker.kind,
+    webUIEnabled: config.webUI.enabled,
   });
 
   scheduleNextTick(0);

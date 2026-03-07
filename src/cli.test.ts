@@ -198,6 +198,28 @@ class CapturingLogger implements Logger {
   }
 }
 
+class FakeWebUIServer {
+  public readonly stopCalls: number[] = [];
+  public readonly host = '127.0.0.1';
+  public readonly port = 3000;
+
+  stop(): Promise<void> {
+    this.stopCalls.push(1);
+    return Promise.resolve();
+  }
+}
+
+function serviceConfig(workflowPath: string): { workflowPath: string; webUI: { enabled: boolean; host: string; port: number } } {
+  return {
+    workflowPath,
+    webUI: {
+      enabled: false,
+      host: '127.0.0.1',
+      port: 0,
+    },
+  };
+}
+
 test('parseArgs uses WORKFLOW_PATH environment variable', () => {
   const previous = process.env.WORKFLOW_PATH;
   process.env.WORKFLOW_PATH = '/env/WORKFLOW.md';
@@ -218,9 +240,22 @@ test('parseArgs accepts --workflow option', () => {
   const result = parseArgs(['--workflow', 'custom/WORKFLOW.md']);
   assert.equal(result.workflowPath, 'custom/WORKFLOW.md');
 });
+
 test('parseArgs supports -w alias', () => {
   const result = parseArgs(['-w', 'another/workflow.md']);
   assert.equal(result.workflowPath, 'another/workflow.md');
+});
+
+test('parseArgs supports --webui options', () => {
+  const result = parseArgs(['--webui', '--webui-host', '0.0.0.0', '--webui-port', '8080']);
+  assert.equal(result.webUI.enabled, true);
+  assert.equal(result.webUI.host, '0.0.0.0');
+  assert.equal(result.webUI.port, 8080);
+});
+
+test('parseArgs falls back to defaults for invalid webui port', () => {
+  const result = parseArgs(['--webui', '--webui-port', 'not-a-port']);
+  assert.equal(result.webUI.port, 3000);
 });
 
 test('parseArgs prints usage and exits on -h', () => {
@@ -252,7 +287,7 @@ test('startService starts tick loop and can stop', async () => {
   const loader = new FakeWorkflowLoader(workflow);
   const clock = new FakeClock();
 
-  const handle = await startService({ workflowPath: 'WORKFLOW.md' }, {
+  const handle = await startService(serviceConfig('WORKFLOW.md'), {
     workflowLoader: loader,
     logger,
     bootstrap: async () => ({
@@ -286,6 +321,42 @@ test('startService starts tick loop and can stop', async () => {
   assert.equal(runtime.tickCalls, beforeStop);
 });
 
+test('startService can start webui when enabled', async () => {
+  const runtime = new FakeRuntime();
+  const logger = new CapturingLogger();
+  const workflow = baseWorkflow(10);
+  const fakeWebUi = new FakeWebUIServer();
+  const clock = new FakeClock();
+  let started = false;
+
+  const handle = await startService({
+    workflowPath: 'WORKFLOW.md',
+    webUI: {
+      enabled: true,
+      host: '127.0.0.1',
+      port: 0,
+    },
+  }, {
+    logger,
+    bootstrap: async () => ({ workflow, runtime, logger }),
+    webUIServerFactory: async () => {
+      started = true;
+      return fakeWebUi;
+    },
+    reloaderFactory: ({ onReload }) => ({
+      start: () => onReload(workflow),
+      stop: () => undefined,
+    }),
+    setTimeoutFn: clock.setTimeout as unknown as typeof setTimeout,
+    clearTimeoutFn: clock.clearTimeout as unknown as typeof clearTimeout,
+    installSignalHandlers: false,
+  });
+
+  assert.equal(started, true);
+  handle.stop();
+  assert.equal(fakeWebUi.stopCalls.length, 1);
+});
+
 test('startService applies new workflow config on hot reload', async () => {
   const runtime = new FakeRuntime();
   const logger = new CapturingLogger();
@@ -296,7 +367,7 @@ test('startService applies new workflow config on hot reload', async () => {
 
   let reloader: FakeReloader | undefined;
 
-  const handle = await startService({ workflowPath: 'WORKFLOW.md' }, {
+  const handle = await startService(serviceConfig('WORKFLOW.md'), {
     workflowLoader: loader,
     logger,
     bootstrap: async () => ({
@@ -336,7 +407,7 @@ test('runtime.tick errors are logged and service keeps ticking', async () => {
   const workflow = baseWorkflow(5);
   const clock = new FakeClock();
 
-  const handle = await startService({ workflowPath: 'WORKFLOW.md' }, {
+  const handle = await startService(serviceConfig('WORKFLOW.md'), {
     logger,
     bootstrap: async () => ({
       workflow,
@@ -368,7 +439,7 @@ test('reload interval is clamped to at least 1000ms', async () => {
   const reloader = new FakeReloader('WORKFLOW.md', () => undefined);
   const clock = new FakeClock();
 
-  const handle = await startService({ workflowPath: 'WORKFLOW.md' }, {
+  const handle = await startService(serviceConfig('WORKFLOW.md'), {
     logger,
     bootstrap: async () => ({
       workflow: initial,
@@ -406,7 +477,7 @@ test('stop cancels service and invokes reloader stop', async () => {
   const clock = new FakeClock();
   const workflow = baseWorkflow(1);
 
-  const handle = await startService({ workflowPath: 'WORKFLOW.md' }, {
+  const handle = await startService(serviceConfig('WORKFLOW.md'), {
     logger,
     bootstrap: async () => ({
       workflow,
