@@ -118,6 +118,57 @@ interface NodesByIdsQuery {
   nodes?: Array<ProjectItemNode | null>;
 }
 
+const PROJECT_FIELD_NAME_FRAGMENT = `
+  ... on ProjectV2Field {
+    name
+  }
+  ... on ProjectV2SingleSelectField {
+    name
+  }
+  ... on ProjectV2IterationField {
+    name
+  }
+`;
+
+const PROJECT_ITEM_FIELDS_SELECTION = `
+  id
+  content {
+    __typename
+    ... on Issue {
+      number
+      title
+      body
+      url
+      createdAt
+      updatedAt
+      labels(first: 20) { nodes { name } }
+    }
+  }
+  fieldValues(first: 20) {
+    nodes {
+      __typename
+      ... on ProjectV2ItemFieldSingleSelectValue {
+        name
+        field {
+          ${PROJECT_FIELD_NAME_FRAGMENT}
+        }
+      }
+      ... on ProjectV2ItemFieldTextValue {
+        text
+        field {
+          ${PROJECT_FIELD_NAME_FRAGMENT}
+        }
+      }
+      ... on ProjectV2ItemFieldNumberValue {
+        number
+        field {
+          ${PROJECT_FIELD_NAME_FRAGMENT}
+        }
+      }
+    }
+  }
+`;
+
 export class GitHubProjectsGraphQLClient implements GitHubProjectsClient {
   constructor(private readonly client: GraphQLClient) {}
 
@@ -135,66 +186,7 @@ export class GitHubProjectsGraphQLClient implements GitHubProjectsClient {
             items(first: $first, after: $after) {
               pageInfo { hasNextPage endCursor }
               nodes {
-                id
-                content {
-                  __typename
-                  ... on Issue {
-                    number
-                    title
-                    body
-                    url
-                    createdAt
-                    updatedAt
-                    labels(first: 20) { nodes { name } }
-                  }
-                }
-                fieldValues(first: 20) {
-                  nodes {
-                    __typename
-                    ... on ProjectV2ItemFieldSingleSelectValue {
-                      name
-                      field {
-                        ... on ProjectV2Field {
-                          name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          name
-                        }
-                      }
-                    }
-                    ... on ProjectV2ItemFieldTextValue {
-                      text
-                      field {
-                        ... on ProjectV2Field {
-                          name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          name
-                        }
-                      }
-                    }
-                    ... on ProjectV2ItemFieldNumberValue {
-                      number
-                      field {
-                        ... on ProjectV2Field {
-                          name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          name
-                        }
-                      }
-                    }
-                  }
-                }
+                ${PROJECT_ITEM_FIELDS_SELECTION}
               }
             }
           }
@@ -204,66 +196,7 @@ export class GitHubProjectsGraphQLClient implements GitHubProjectsClient {
             items(first: $first, after: $after) {
               pageInfo { hasNextPage endCursor }
               nodes {
-                id
-                content {
-                  __typename
-                  ... on Issue {
-                    number
-                    title
-                    body
-                    url
-                    createdAt
-                    updatedAt
-                    labels(first: 20) { nodes { name } }
-                  }
-                }
-                fieldValues(first: 20) {
-                  nodes {
-                    __typename
-                    ... on ProjectV2ItemFieldSingleSelectValue {
-                      name
-                      field {
-                        ... on ProjectV2Field {
-                          name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          name
-                        }
-                      }
-                    }
-                    ... on ProjectV2ItemFieldTextValue {
-                      text
-                      field {
-                        ... on ProjectV2Field {
-                          name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          name
-                        }
-                      }
-                    }
-                    ... on ProjectV2ItemFieldNumberValue {
-                      number
-                      field {
-                        ... on ProjectV2Field {
-                          name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          name
-                        }
-                      }
-                    }
-                  }
-                }
+                ${PROJECT_ITEM_FIELDS_SELECTION}
               }
             }
           }
@@ -272,16 +205,13 @@ export class GitHubProjectsGraphQLClient implements GitHubProjectsClient {
     `;
 
     const ownerType = params.ownerType;
-    const includeUser = ownerType === 'user' || ownerType === undefined;
-    const includeOrg = ownerType === 'org' || ownerType === undefined;
-
     const data = await this.safeQuery<ProjectItemsPageQuery>(query, {
       owner: params.owner,
       number: params.projectNumber,
       first: params.first,
       after: params.after ?? null,
-      includeUser,
-      includeOrg,
+      includeUser: ownerType !== 'org',
+      includeOrg: ownerType !== 'user',
     });
 
     const connection = data.user?.projectV2?.items ?? data.organization?.projectV2?.items;
@@ -303,66 +233,7 @@ export class GitHubProjectsGraphQLClient implements GitHubProjectsClient {
       query ProjectItemsByIds($ids: [ID!]!) {
         nodes(ids: $ids) {
           ... on ProjectV2Item {
-            id
-            content {
-              __typename
-              ... on Issue {
-                number
-                title
-                body
-                url
-                createdAt
-                updatedAt
-                labels(first: 20) { nodes { name } }
-              }
-            }
-            fieldValues(first: 20) {
-              nodes {
-                __typename
-                ... on ProjectV2ItemFieldSingleSelectValue {
-                  name
-                  field {
-                        ... on ProjectV2Field {
-                          name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          name
-                        }
-                      }
-                }
-                ... on ProjectV2ItemFieldTextValue {
-                  text
-                  field {
-                        ... on ProjectV2Field {
-                          name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          name
-                        }
-                      }
-                }
-                ... on ProjectV2ItemFieldNumberValue {
-                  number
-                  field {
-                        ... on ProjectV2Field {
-                          name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          name
-                        }
-                      }
-                }
-              }
-            }
+            ${PROJECT_ITEM_FIELDS_SELECTION}
           }
         }
       }
