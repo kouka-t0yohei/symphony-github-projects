@@ -1,22 +1,17 @@
-# Symphony for GitHub Projects
-
-- **日本語 README:** [README-ja.md](./README-ja.md)
-
-A TypeScript implementation of [Symphony](https://github.com/openai/symphony) targeting
-**GitHub Projects** as the issue tracker, based on the
-[Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md).
+# symphony-github-projects
 
 Symphony turns project work into isolated, autonomous implementation runs — allowing teams to
-manage work instead of supervising coding agents. The upstream reference implementation uses Linear
-as its tracker; this project adapts the same architecture for GitHub Projects.
+coordinate coding agents against GitHub Projects as a tracker. This project adapts the same
+architecture for GitHub Projects.
 
-> **Status:** Engineering preview. Suitable for evaluation in trusted environments.
+## Why this exists
 
-## Running Symphony for GitHub Projects
+OpenAI's Symphony shows a clean orchestration pattern for agentic software delivery. This repo is an
+experimental TypeScript/Node implementation of that pattern for GitHub Projects.
 
-### Option 1. Make your own
+## Two ways to use this repository
 
-Tell your favorite coding agent to build Symphony for GitHub Projects in a programming language of your choice:
+### Option 1. Use the spec to build your own implementation
 
 > Implement Symphony for GitHub Projects according to the following spec:
 > https://github.com/t0yohei/symphony-github-projects/blob/main/SPEC.md
@@ -203,6 +198,9 @@ Current dashboard scope:
 - retry queue
 - latest rate-limit snapshot
 
+`dev:dashboard:open` forwards `Ctrl+C` to the underlying CLI process so the dashboard shuts down
+cleanly instead of leaving the child `node dist/cli.js` process behind.
+
 ## WORKFLOW.md Reference
 
 The `WORKFLOW.md` file is the single source of truth for orchestrator behavior. It is designed
@@ -234,90 +232,46 @@ GitHub Projects extension namespace:
 - `extensions.github_projects.status_options.done` (optional label text, default `Done`)
 - `extensions.github_projects.mark_done_on_completion` (optional, default: `false`)
 
-When `mark_done_on_completion: true`, a worker completion triggers `Project` state update to your configured `done` option.
-If this is left `false`, completion will schedule a short continuation retry by default, which is expected for multi-turn workflows but can look like a loop in simple one-turn setups.
-
-Compatibility mapping is built-in for existing keys (`polling.intervalMs`, `workspace.baseDir`,
-`agent.maxTurns`, `tracker.github.*`, and camelCase timeout/retry fields), so older WORKFLOW files
-continue to load while runtime uses one canonical typed model.
-
-### Prompt Template
-
-The Markdown body supports [Liquid](https://liquidjs.com/) template variables:
-
-- `{{ issue.identifier }}` — Work item identifier
-- `{{ issue.title }}` — Title
-- `{{ issue.description }}` — Description/body
-- `{{ issue.state }}` — Current state
-- `{{ issue.labels }}` — Labels array
-- `{{ attempt }}` — `null` on first run, integer on retries
-
-Unknown variables and filters raise errors (strict mode).
-
-### Hot Reload
-
 The orchestrator watches `WORKFLOW.md` for changes and re-applies configuration without restart.
-Invalid changes keep the last known good config and log an error.
 
-## Architecture
+## Repository Layout
 
-```
+```text
 src/
 ├── agent/
-│   └── codex-app-server.ts    # Codex app-server subprocess integration
-├── bootstrap.ts               # Wires loader → tracker → logger → runtime
-├── config/
-│   ├── resolver.ts            # Typed config getters with defaults + env resolution
-│   └── runtime-config.ts      # Canonical runtime config types
+│   └── codex-app-server.ts      # Codex app-server runtime worker
+├── bootstrap.ts                 # Service bootstrapping and dependency wiring
+├── cli.ts                       # CLI entrypoint
+├── dashboard/
+│   └── server.ts                # Local observability dashboard server
 ├── logging/
-│   └── logger.ts              # Structured JSON logger
-├── model/
-│   └── work-item.ts           # Normalized work-item model
+│   └── logger.ts                # Structured logger
 ├── orchestrator/
-│   ├── reconciler.ts          # Tracker state sync + stall detection
-│   └── runtime.ts             # Poll/tick loop with bounded concurrency
-├── prompt/
-│   └── template.ts            # Liquid prompt renderer
+│   ├── reconciler.ts            # Runtime reconciliation helpers
+│   └── runtime.ts               # Polling runtime + retry/state machine
 ├── tracker/
-│   ├── adapter.ts             # Tracker adapter interface
-│   ├── github-projects-writer.ts  # GitHub Projects write path (status updates)
-│   └── graphql-client.ts      # GitHub GraphQL client
+│   ├── github-projects-*.ts     # GitHub Projects read/write adapters
+│   └── graphql-client.ts        # Minimal GraphQL client
 ├── workflow/
-│   ├── contract.ts            # WORKFLOW.md contract + validation
-│   ├── hot-reload.ts          # File watcher + dynamic config reload
-│   └── loader.ts              # WORKFLOW.md parser (YAML front matter + prompt body)
+│   ├── contract.ts              # WORKFLOW.md contract + validation
+│   ├── hot-reload.ts            # File watcher / hot reload support
+│   └── loader.ts                # WORKFLOW.md parser (YAML front matter + prompt body)
 └── workspace/
-    └── hooks.ts               # Workspace lifecycle hooks (after_create, before_run, etc.)
+    └── manager.ts               # Per-item workspace lifecycle
 ```
 
-## Development
+## Notes
 
-```bash
-npm run lint          # ESLint
-npm run format        # Prettier (write)
-npm run format:check  # Prettier (check only)
-npm run typecheck     # TypeScript type check
-npm run build         # Compile to dist/
-npm run test          # Build + run tests
-```
+- This project is intentionally pragmatic and experimental.
+- Prefer fine-grained PATs over broad classic tokens when possible.
+- When using the dashboard, run the built JS from `dist/` after `npm run build` (or use the provided dashboard scripts).
 
-### CI
-
-GitHub Actions runs on PRs and `main` pushes:
-
-- `npm ci` → `npm run lint` → `npm run test` → `npm run build`
-
-Workflow file: `.github/workflows/ci.yml`
-
-## Differences from Upstream Symphony
+## Comparison
 
 | Aspect          | [openai/symphony](https://github.com/openai/symphony) | This project                     |
-| --------------- | ------------------------------------------------------ | -------------------------------- |
-| Tracker         | Linear                                                 | GitHub Projects (ProjectV2 API)  |
-| Language        | Elixir/OTP (reference)                                 | TypeScript / Node.js             |
-| State tracking  | Linear issue states                                    | GitHub Project board columns     |
-| SPEC compliance | Reference implementation                               | Follows SPEC direction           |
-
-## License
-
-[Apache License 2.0](LICENSE)
+|----------------|--------------------------------------------------------|----------------------------------|
+| Runtime        | Elixir / Phoenix                                       | TypeScript / Node                |
+| Tracker        | Issue tracker abstractions                             | GitHub Projects                  |
+| Dashboard      | Phoenix LiveView dashboard                             | Lightweight local Node dashboard |
+| Worker         | Agent runtime abstraction                              | Codex app-server                 |
+| Config         | Symphony workflow/spec                                 | `WORKFLOW.md` front matter       |
