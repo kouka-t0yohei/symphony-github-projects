@@ -1,5 +1,8 @@
 # symphony-github-projects
 
+- English README: `README.md`
+- 日本語 README: [README-ja.md](./README-ja.md)
+
 Symphony turns project work into isolated, autonomous implementation runs — allowing teams to
 coordinate coding agents against GitHub Projects as a tracker. This project adapts the same
 architecture for GitHub Projects.
