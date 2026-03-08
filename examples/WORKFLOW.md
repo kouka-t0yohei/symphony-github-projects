@@ -11,7 +11,6 @@ workspace:
   root: ~/symphony-workspaces
 
 hooks:
-  timeout_ms: 120000
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
     npm install
@@ -24,6 +23,7 @@ agent:
   command: codex app-server
   max_turns: 20
   timeouts:
+    hooks_timeout_ms: 120000
     turn_timeout_ms: 300000
     read_timeout_ms: 15000
     stall_timeout_ms: 120000

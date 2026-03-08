@@ -82,7 +82,7 @@ const DEFAULT_MAX_TURNS = 20;
 
 /**
  * Default per-turn wall-clock timeout (ms).
- * Matches the WORKFLOW.md hooks.timeout_ms recommendation (120 s).
+ * Matches the WORKFLOW.md hook-timeout recommendation (120 s).
  * Raise for exceptionally long-running code generation tasks.
  */
 const DEFAULT_TURN_TIMEOUT_MS = 120_000;

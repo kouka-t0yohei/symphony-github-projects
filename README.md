@@ -112,7 +112,6 @@ workspace:
   root: ~/symphony-workspaces
 
 hooks:
-  timeout_ms: 120000
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
     npm install
@@ -120,6 +119,8 @@ hooks:
 agent:
   command: codex app-server
   max_turns: 20
+  timeouts:
+    hooks_timeout_ms: 120000
 
 extensions:
   github_projects:
@@ -186,7 +187,9 @@ Core contract (canonical):
 - `workspace.root`
 - `agent.command`, `agent.args`, `agent.max_turns`
 - `agent.timeouts.{turn_timeout_ms,read_timeout_ms,stall_timeout_ms,hooks_timeout_ms}`
-- `hooks.{after_create,before_run,after_run,before_remove,timeout_ms}`
+- `hooks.{after_create,before_run,after_run,before_remove}`
+
+Legacy note: older examples may show `hooks.timeout_ms`, but the supported location for hook timeout configuration is `agent.timeouts.hooks_timeout_ms`.
 
 GitHub Projects extension namespace:
 
