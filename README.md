@@ -89,6 +89,27 @@ export GITHUB_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxx"
 The `WORKFLOW.md` front matter references these variables with `$VAR_NAME` syntax (e.g.
 `tokenEnv: GITHUB_TOKEN`). The config resolver reads them from `process.env` at startup.
 
+#### Recommended GitHub token permissions
+
+If you use a fine-grained personal access token, scope it to the target repository (and the owning
+user/org project, if applicable).
+
+**Tracker-only mode** (read/update GitHub Projects state only):
+- Projects: **Read and write**
+- Metadata: **Read-only**
+- Issues: **Read-only**
+
+**Implementation mode** (same token also pushes code and opens PRs):
+- Projects: **Read and write**
+- Metadata: **Read-only**
+- Issues: **Read and write**
+- Contents: **Read and write**
+- Pull requests: **Read and write**
+
+If your workflow only reads issue metadata and never comments on issues, `Issues: Read-only` is
+usually enough. If your hooks clone private repositories or your agent pushes branches / opens pull
+requests, use the implementation-mode set above.
+
 ### 3. Create your WORKFLOW.md
 
 Copy the example and customize it for your project:
