@@ -116,6 +116,7 @@ export class GitHubProjectsAdapter implements TrackerAdapter {
 
     const normalized = allNodes
       .map((node) => this.normalizeNode(node, numberToId))
+      .filter((node): node is NormalizedWorkItem => Boolean(node))
       .filter((node) => target.has(node.state));
 
     return normalized;
@@ -148,9 +149,13 @@ export class GitHubProjectsAdapter implements TrackerAdapter {
   private normalizeNode(
     node: ProjectItemNode,
     numberToId: Map<number, string>,
-  ): NormalizedWorkItem {
+  ): NormalizedWorkItem | null {
     if (!node.content || node.content.__typename !== 'Issue') {
       throw new TrackerMalformedPayloadError('Project item does not contain Issue content');
+    }
+
+    if ((node.content.state ?? '').toUpperCase() === 'CLOSED') {
+      return null;
     }
 
     const createdAt = node.content.createdAt;

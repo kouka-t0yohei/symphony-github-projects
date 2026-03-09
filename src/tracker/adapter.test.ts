@@ -41,6 +41,7 @@ function item(
       title: `Issue ${number}`,
       body: `Body ${number}`,
       url: `https://example.com/${number}`,
+      state: 'OPEN',
       createdAt: '2026-01-01T00:00:00Z',
       updatedAt: '2026-01-02T00:00:00Z',
       labels: { nodes: labels.map((name) => ({ name })) },
@@ -112,6 +113,34 @@ describe('GitHubProjectsAdapter', () => {
       updatedAt: '2026-01-02T00:00:00Z',
       url: 'https://example.com/101',
     });
+  });
+
+  it('skips closed issues even when the project status is still active', async () => {
+    const closed = item('A', 101, 'In Progress', [], {
+      content: {
+        __typename: 'Issue',
+        number: 101,
+        title: 'Issue 101',
+        body: 'Body 101',
+        url: 'https://example.com/101',
+        state: 'CLOSED',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-02T00:00:00Z',
+        labels: { nodes: [] },
+      },
+    });
+    const open = item('B', 102, 'In Progress', []);
+    const client = new FakeClient([
+      {
+        items: [closed, open],
+        hasNextPage: false,
+        endCursor: null,
+      },
+    ]);
+    const adapter = new GitHubProjectsAdapter({ owner: 'o', projectNumber: 1, client });
+
+    const candidates = await adapter.listCandidateItems({ activeStates: ['in_progress'] });
+    assert.deepEqual(candidates.map((candidate) => candidate.id), ['B']);
   });
 
   it('fetches items by explicit states', async () => {

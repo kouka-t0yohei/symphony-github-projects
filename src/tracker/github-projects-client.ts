@@ -69,6 +69,7 @@ export interface ProjectItemNode {
     title: string;
     body?: string;
     url?: string;
+    state?: string;
     labels?: { nodes?: Array<{ name: string | null } | null> | null };
     createdAt?: string;
     updatedAt?: string;
@@ -139,6 +140,7 @@ const PROJECT_ITEM_FIELDS_SELECTION = `
       title
       body
       url
+      state
       createdAt
       updatedAt
       labels(first: 20) { nodes { name } }
